@@ -29,6 +29,21 @@ services:
       timeout: 5s
       retries: 10
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: phastos-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: phastos
+      RABBITMQ_DEFAULT_PASS: phastos
+    ports: ["5672:5672", "15672:15672"] # 15672 = management UI
+    volumes: ["rabbitmqdata:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pgdata:
   redisdata:
+  rabbitmqdata:

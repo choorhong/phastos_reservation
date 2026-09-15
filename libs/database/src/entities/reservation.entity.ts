@@ -58,6 +58,15 @@ export class Reservation {
   @Column({ name: 'cancel_reason', type: 'varchar', nullable: true })
   cancelReason?: ReservationCancelReason;
 
+  /**
+   * Set by notification-worker's reminder sweep (PLAN.md "Decisions" #2)
+   * the moment it claims this reservation for a reminder send -- the guard
+   * (`WHERE reminder_sent_at IS NULL`) that keeps concurrent sweep ticks
+   * from enqueueing the same reminder twice.
+   */
+  @Column({ name: 'reminder_sent_at', type: 'timestamptz', nullable: true })
+  reminderSentAt?: Date;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
