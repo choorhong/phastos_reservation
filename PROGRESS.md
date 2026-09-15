@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after RabbitMQ, before Kafka
+## Status: paused after Kafka, before wiring HTTP reservation endpoints
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -289,6 +289,94 @@ All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
   without an HTTP layer, since it's driven by `notification-worker`'s own
   cron, not a request.
 
+## Step 5 — Kafka ✅
+
+- `docker-compose.yml`: added `kafka` (`confluentinc/cp-kafka:7.6.0`, KRaft
+  mode, no Zookeeper) + `kafka-ui` (`provectuslabs/kafka-ui`, port 8080) per
+  PLAN.md §5. Healthcheck via `kafka-broker-api-versions`.
+- `.env.example` / `.env`: added `KAFKA_BROKERS`, `KAFKA_CLIENT_ID`,
+  `KAFKA_TOPIC_REPLICATION_FACTOR` (1 locally, 3 in PLAN.md's non-local
+  guidance), `EVENT_CONSUMER_GROUP_ID`.
+- `libs/database`: new `ProcessedEvent` entity (`processed_events`,
+  composite PK `(event_id, consumer_name)` -- PLAN.md §3's
+  idempotent-consumption ledger; composite rather than `event_id` alone so
+  multiple downstream consumers can dedupe independently against the same
+  event) + migration `AddProcessedEvents`. Added to `DatabaseModule`'s
+  `entities`/`forFeature` and `data-source.ts`.
+- `libs/kafka-contracts/src/reservation-events.ts` (envelope + payload
+  types already existed from Step 1; added the runtime pieces):
+  - `ensureReservationEventsTopic(admin, replicationFactor)` -- idempotent
+    topic creation (`partitions: 12` per PLAN.md §3), run by both apps on
+    startup, same "whichever comes up first wins" pattern as
+    `assertNotificationsTopology`.
+  - `publishReservationEvent(producer, eventType, {slotId, locationId,
+    correlationId, payload})` -- envelopes + sends, keyed by `slotId` so a
+    slot's events land in one partition and stay ordered. Shared so the
+    envelope shape can't drift between producers.
+- `apps/api/src/modules/kafka/` -- `KAFKA_PRODUCER` provider: connects,
+  ensures the topic via an `Admin` client, then returns a connected
+  `Producer`.
+- `apps/api/src/modules/events/events-publisher.service.ts` --
+  `EventsPublisherService.publishReservationRequested/Confirmed/Cancelled` +
+  `publishSlotReleased`, thin wrappers over `publishReservationEvent`. Same
+  caveat as `NotificationsPublisherService`: not called from anywhere yet,
+  ready for the HTTP reservation flow.
+- `apps/event-consumer/src/modules/kafka/` -- `KAFKA_CONSUMER` provider:
+  connects, ensures the topic, subscribes to `reservation-events`.
+- `apps/event-consumer/src/modules/events/events-consumer.service.ts` --
+  `EventsConsumerService` stands in for analytics/audit/inventory-sync at
+  once (same scope boundary as the notification handlers -- logs, no real
+  downstream integration yet). Claims each event with a raw
+  `INSERT INTO processed_events ... ON CONFLICT DO NOTHING RETURNING
+  event_id` *before* "processing" it; an empty `RETURNING` result means a
+  duplicate delivery, logged and skipped.
+- `AppModule` (api, event-consumer): wired in `KafkaModule`/`EventsModule`,
+  and (`event-consumer` only) `DatabaseModule` for the `processed_events`
+  ledger.
+
+### Verified (ad hoc scripts, not committed)
+
+Ran via `npx ts-node -r tsconfig-paths/register <script>.ts` against real
+Postgres + Kafka containers, with `api` and `event-consumer` built and
+running:
+
+- Both apps' boot logs confirmed topic auto-creation with all 12
+  partitions (`event-consumer`'s consumer-group join showed
+  `memberAssignment: {"reservation-events":[0,1,...,11]}`).
+- Published a `ReservationRequested` event via `EventsPublisherService` →
+  `event-consumer` logged `reservation_event.processed`.
+- **Caught and fixed a real bug during verification**: the first cut of
+  the dedupe check used TypeORM's query-builder `.insert().orIgnore()` and
+  checked `result.identifiers.length`. Since `ProcessedEvent`'s primary key
+  columns aren't DB-generated, TypeORM populates `identifiers` from the
+  *input* values regardless of whether Postgres actually inserted the row
+  or discarded it via `ON CONFLICT DO NOTHING` -- so a redelivered event
+  with the same `eventId` was logged as freshly processed a second time,
+  even though Postgres correctly kept only one `processed_events` row.
+  Fixed by switching to a raw parameterized query with
+  `ON CONFLICT DO NOTHING RETURNING event_id` and checking whether any row
+  came back. Re-verified: republishing the same `eventId` now logs
+  `reservation_event.duplicate_skipped`, and `processed_events` stayed at
+  exactly one row throughout.
+
+All test rows cleaned up afterward (`DELETE FROM processed_events`).
+
+### Current environment state (as of pausing)
+
+- `phastos-kafka` container: **running**, healthy, port 9092. `phastos-kafka-ui`
+  running on port 8080 (topic/partition/consumer-lag inspection).
+- `phastos-postgres`, `phastos-redis`, `phastos-rabbitmq`: unchanged, still
+  running/healthy.
+- Migration `AddProcessedEvents1789465789679` applied to the running
+  Postgres instance.
+- The `reservation-events` topic exists on the broker (12 partitions,
+  replication factor 1) from the verification run above.
+- No HTTP endpoints call `EventsPublisherService` yet -- same caveat as
+  `SlotHoldService` (Step 3) and `NotificationsPublisherService` (Step 4).
+  All four infrastructure legs (Redis, Postgres, RabbitMQ, Kafka) are now
+  built and independently verified; none of them are reachable over HTTP
+  yet. That's the next and last step.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -304,22 +392,21 @@ All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
    `libs/redis-scripts/src/redis-hold.scripts.ts` instead of separate
    `.lua` files — single source of truth, no build-step dependency.
 
-## Next step: Kafka (not started)
+## Next step: wire the actual `reservations` HTTP endpoints (not started)
 
-Per `PLAN.md` §3: single `reservation-events` topic, partitioned by
-`slotId`, 4 event types (`ReservationRequested/Confirmed/Cancelled`,
-`SlotReleased`) in one envelope shape, consumed by `event-consumer`
-(currently a health-only stub, port 3002). `libs/kafka-contracts` already
-has the full envelope + payload types from PLAN.md written (Step 1) — this
-step is mostly `docker-compose.yml` (`kafka` in KRaft mode + `kafka-ui` for
-inspection, both in PLAN.md §5), a producer wired into `apps/api`, and
-`event-consumer`'s actual consumer group + the idempotent-consumption
-pattern (`processed_events` table or Redis `SETNX`, PLAN.md §3).
-
-## After Kafka
-
-Per `PLAN.md`: wiring the actual `reservations` HTTP endpoints in
-`apps/api` that tie Redis (`SlotHoldService`) + Postgres + Kafka publish +
-RabbitMQ enqueue (`NotificationsPublisherService`) together end to end —
-everything built in Steps 2-4 is ready and waiting for this; it's the
-first point where any of it is reachable over HTTP.
+All four infrastructure legs are built and independently verified:
+`SlotHoldService` (Redis, Step 2), the Postgres schema + capacity trigger
+(Step 2), `NotificationsPublisherService` (RabbitMQ, Step 4), and
+`EventsPublisherService` (Kafka, Step 5). None of them are reachable over
+HTTP yet -- this is the step that ties them together: `POST` a reservation
+request → `SlotHoldService.claim` → Postgres insert (`held`) →
+`EventsPublisherService.publishReservationRequested`; a confirm/checkout
+path → `SlotHoldService.confirm` → Postgres update to `confirmed` (inside
+the capacity-trigger-guarded transaction) →
+`NotificationsPublisherService.publishConfirmationEmail`/`publishReceipt` +
+`EventsPublisherService.publishReservationConfirmed`; a cancel path →
+`SlotHoldService.release` → Postgres update to `cancelled` →
+`EventsPublisherService.publishReservationCancelled`/`publishSlotReleased`.
+Per PLAN.md §4's direct-vs-queue table, the Redis/Postgres/Kafka-publish
+calls are synchronous in the request path; only the RabbitMQ enqueues are
+fire-and-forget.
