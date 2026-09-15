@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { KafkaModule } from '../kafka/kafka.module';
+import { KafkaModule } from '@/modules/kafka/kafka.module';
 import { EventsPublisherService } from './events-publisher.service';
 
 @Module({

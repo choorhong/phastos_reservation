@@ -1,7 +1,22 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/apps/notification-worker"
+    "outDir": "../../dist/apps/notification-worker",
+    "paths": {
+      "@/*": ["apps/notification-worker/src/*"],
+      "@app/domain": ["libs/domain/src"],
+      "@app/domain/*": ["libs/domain/src/*"],
+      "@app/kafka-contracts": ["libs/kafka-contracts/src"],
+      "@app/kafka-contracts/*": ["libs/kafka-contracts/src/*"],
+      "@app/redis-scripts": ["libs/redis-scripts/src"],
+      "@app/redis-scripts/*": ["libs/redis-scripts/src/*"],
+      "@app/database": ["libs/database/src"],
+      "@app/database/*": ["libs/database/src/*"],
+      "@app/rabbitmq-contracts": ["libs/rabbitmq-contracts/src"],
+      "@app/rabbitmq-contracts/*": ["libs/rabbitmq-contracts/src/*"],
+      "@app/common": ["libs/common/src"],
+      "@app/common/*": ["libs/common/src/*"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

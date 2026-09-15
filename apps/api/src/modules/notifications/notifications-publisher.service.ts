@@ -6,7 +6,7 @@ import {
   ReceiptPayload,
   ReminderPayload,
 } from '@app/rabbitmq-contracts';
-import { RABBITMQ_CHANNEL } from '../rabbitmq/rabbitmq-connection.provider';
+import { RABBITMQ_CHANNEL } from '@/modules/rabbitmq/rabbitmq-connection.provider';
 
 /**
  * Publishes the three notification task messages (PLAN.md §4). These are

@@ -7,7 +7,7 @@ import type { Redis } from 'ioredis';
 import { Repository } from 'typeorm';
 import { ACTIVE_SLOTS_KEY, slotKeys } from '@app/redis-scripts';
 import { Reservation, Slot } from '@app/database';
-import { REDIS_CLIENT } from '../redis/redis-client.provider';
+import { REDIS_CLIENT } from '@/modules/redis/redis-client.provider';
 import { HoldExpiredError, SlotNotLoadedError, SlotSoldOutError } from './slot-hold.errors';
 
 export interface SlotHold {

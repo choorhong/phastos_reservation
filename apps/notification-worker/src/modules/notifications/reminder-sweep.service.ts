@@ -8,7 +8,7 @@ import type { ChannelWrapper } from 'amqp-connection-manager';
 import { Between, IsNull, Repository } from 'typeorm';
 import { Reservation } from '@app/database';
 import { publishNotification } from '@app/rabbitmq-contracts';
-import { RABBITMQ_CHANNEL } from '../rabbitmq/rabbitmq-connection.provider';
+import { RABBITMQ_CHANNEL } from '@/modules/rabbitmq/rabbitmq-connection.provider';
 
 const SWEEP_INTERVAL_NAME = 'reminder-sweep';
 

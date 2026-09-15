@@ -11,7 +11,7 @@ import {
   notificationQueueName,
   RETRY_COUNT_HEADER,
 } from '@app/rabbitmq-contracts';
-import { RABBITMQ_CHANNEL } from '../rabbitmq/rabbitmq-connection.provider';
+import { RABBITMQ_CHANNEL } from '@/modules/rabbitmq/rabbitmq-connection.provider';
 
 /**
  * Consumes the three notification queues (PLAN.md §4). There's no real

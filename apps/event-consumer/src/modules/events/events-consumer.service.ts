@@ -5,7 +5,7 @@ import type { Consumer, EachMessagePayload } from 'kafkajs';
 import { Repository } from 'typeorm';
 import { ProcessedEvent } from '@app/database';
 import { ReservationEvent } from '@app/kafka-contracts';
-import { KAFKA_CONSUMER } from '../kafka/kafka-consumer.provider';
+import { KAFKA_CONSUMER } from '@/modules/kafka/kafka-consumer.provider';
 
 const CONSUMER_NAME = 'event-consumer';
 
