@@ -14,5 +14,21 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: phastos-redis
+    # notify-keyspace-events Ex: emit key-expired events, needed for the
+    # hold-expiry reaper's fast path (PLAN.md §2). The reconciliation sweep
+    # is the backstop for events missed across a restart/failover.
+    command: ["redis-server", "--notify-keyspace-events", "Ex"]
+    ports: ["6379:6379"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pgdata:
+  redisdata:

@@ -111,3 +111,15 @@ export function slotKeys(slotId: string) {
     hold: (holdId: string) => `hold:{${slotId}}:${holdId}`,
   };
 }
+
+/**
+ * A single global SET of slotIds that have (or recently had) a live hold.
+ * `SlotHoldService.claim` adds to it; the reaper's reconciliation sweep
+ * (PLAN.md §2) reads it via `SMEMBERS` to know which per-slot `pending`
+ * ZSETs to scan, so the sweep works across app restarts/instances instead
+ * of relying on any one process's in-memory state. Intentionally not hash
+ * tagged -- it's a plain single-key command (`SADD`/`SMEMBERS`), never
+ * combined into the same multi-key Lua call as the per-slot keys above, so
+ * it doesn't need to share their Cluster hash slot.
+ */
+export const ACTIVE_SLOTS_KEY = 'slots:active-holds';
