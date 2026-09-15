@@ -1,3 +1,6 @@
+import { randomUUID } from 'crypto';
+import type { Admin, Producer } from 'kafkajs';
+
 /**
  * Kafka event contracts for the `reservation-events` topic (see PLAN.md §3).
  *
@@ -60,3 +63,65 @@ export type ReservationEvent =
   | EventEnvelope<'SlotReleased', SlotReleasedPayload>;
 
 export const RESERVATION_EVENTS_TOPIC = 'reservation-events';
+
+/**
+ * `partitions: 12` gives headroom to scale `event-consumer` instances
+ * independently of Redis/Postgres sharding (PLAN.md §3).
+ * `replicationFactor` is passed in rather than hardcoded -- 1 for a single
+ * local broker, 3 in non-local envs, per PLAN.md §3.
+ */
+export async function ensureReservationEventsTopic(
+  admin: Admin,
+  replicationFactor: number,
+): Promise<void> {
+  const existing = await admin.listTopics();
+  if (existing.includes(RESERVATION_EVENTS_TOPIC)) {
+    return;
+  }
+  await admin.createTopics({
+    waitForLeaders: true,
+    topics: [{ topic: RESERVATION_EVENTS_TOPIC, numPartitions: 12, replicationFactor }],
+  });
+}
+
+/**
+ * Envelopes and publishes one reservation lifecycle event, keyed by
+ * `slotId` so all of one slot's events land in the same partition and are
+ * consumed in order (PLAN.md §3). Shared by every producer (today: only
+ * `apps/api`) so the envelope shape can't drift between call sites.
+ */
+export async function publishReservationEvent<T extends ReservationEventType>(
+  producer: Producer,
+  eventType: T,
+  args: {
+    slotId: string;
+    locationId: string;
+    correlationId: string;
+    payload: Extract<ReservationEvent, { eventType: T }>['payload'];
+  },
+): Promise<string> {
+  const eventId = randomUUID();
+  const event: EventEnvelope<T, typeof args.payload> = {
+    eventId,
+    eventType,
+    occurredAt: new Date().toISOString(),
+    version: 1,
+    slotId: args.slotId,
+    locationId: args.locationId,
+    correlationId: args.correlationId,
+    payload: args.payload,
+  };
+
+  await producer.send({
+    topic: RESERVATION_EVENTS_TOPIC,
+    messages: [
+      {
+        key: args.slotId,
+        value: JSON.stringify(event),
+        headers: { eventType, eventId },
+      },
+    ],
+  });
+
+  return eventId;
+}
