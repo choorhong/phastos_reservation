@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Postgres, before Redis
+## Status: paused after Redis, before RabbitMQ
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -108,6 +108,83 @@ All of the above passed at the time this was written.
 - Migration `InitialSchema1789211003000` has been applied to the running
   Postgres instance's `pgdata` volume.
 
+## Step 3 — Redis ✅
+
+- `docker-compose.yml`: added `redis:7-alpine` service, `--notify-keyspace-events Ex`
+  (required for the reaper's fast path), named volume `redisdata`, healthcheck via
+  `redis-cli ping`.
+- `.env.example` / `.env`: added `REDIS_HOST`, `REDIS_PORT`, `HOLD_TTL_SECONDS` (300),
+  `HOLD_REAPER_SWEEP_INTERVAL_MS` (30000).
+- `libs/redis-scripts`: added `ACTIVE_SLOTS_KEY` (`slots:active-holds`) — a plain
+  (non-hash-tagged) global Redis SET of slotIds with a live/recent hold, so the
+  reaper's sweep can discover which slots to scan without relying on any one
+  process's in-memory state (works across app restarts/instances). Deliberately
+  kept out of the atomic Lua scripts, which must stay single-hash-tag for Redis
+  Cluster compatibility (PLAN.md §2) — populated instead as a best-effort
+  separate `SADD` from `SlotHoldService.claim()`.
+- `apps/api/src/modules/redis/`:
+  - `redis-client.provider.ts` — two ioredis clients: `REDIS_CLIENT` (general
+    commands + the three attached Lua commands via `attachHoldScripts()`) and
+    `REDIS_SUBSCRIBER_CLIENT` (dedicated connection for keyspace-notification
+    `PSUBSCRIBE` — ioredis can't mix pub/sub mode with ordinary commands on one
+    connection).
+  - `redis.module.ts` — provides/exports both.
+- `apps/api/src/modules/slots/`:
+  - `slot-hold.service.ts` — `SlotHoldService.claim/confirm/release`, wrapping
+    the Lua scripts. On `SLOT_NOT_LOADED` (cache miss), recomputes
+    `capacity - COUNT(confirmed)` from Postgres and seeds
+    `slot:{slotId}:available` with `SETNX` before retrying the claim once.
+    Lua `error_reply` strings are mapped to typed errors (`slot-hold.errors.ts`:
+    `SlotNotLoadedError`, `SlotSoldOutError`, `HoldExpiredError`) by matching on
+    `err.message` (ioredis surfaces `redis.error_reply(...)` as a `ReplyError`
+    whose message is that exact string).
+  - `hold-reaper.service.ts` — `HoldReaperService`, the two-layer reaper from
+    PLAN.md §2: `PSUBSCRIBE __keyevent@*__:expired` (fast path) +
+    a `SchedulerRegistry`-registered interval reading `ACTIVE_SLOTS_KEY` →
+    per-slot `ZRANGEBYSCORE pending -inf now` → reap anything whose `hold:*`
+    key is already gone (backstop for notifications missed across a Redis
+    restart/failover). Both paths funnel into the same `releaseHold` Lua call
+    and log `slot.hold.expired_reaped` with `reapedBy: "notification" | "sweep"`.
+  - `slots.module.ts` — wires `SlotHoldService` + `HoldReaperService`, imports
+    `RedisModule` and `TypeOrmModule.forFeature([Slot, Reservation])`.
+- `AppModule`: added `ScheduleModule.forRoot()` (needed for
+  `HoldReaperService`'s `SchedulerRegistry`-based sweep interval) and
+  `SlotsModule`.
+
+### Verified (ad hoc scripts, not committed — re-create similarly if re-verifying)
+
+Ran via `npx ts-node -r tsconfig-paths/register <script>.ts`, using
+`NestFactory.createApplicationContext(AppModule)` + a seeded capacity-1
+Postgres slot:
+
+- Claim on a cold cache → `slot.availability.loaded_from_postgres` log line,
+  then `HELD`.
+- Second claim on the same (now-exhausted) slot → `SlotSoldOutError`.
+- Confirm → returns the holding `userId`; confirming the same `holdId` again
+  → `HoldExpiredError` (Postgres-side idempotency via `holdId UNIQUE` is the
+  layer below this; this is the Redis-side rejection before it ever reaches
+  Postgres).
+- Reaper fast path: claimed with `HOLD_TTL_SECONDS=3`, waited past expiry —
+  `slot.hold.expired_reaped` with `reapedBy: "notification"`,
+  `available` back to 1, `pending` empty, `hold:*` key gone.
+- Reaper backstop: same test with `redis-cli config set notify-keyspace-events ""`
+  (notifications off) and `HOLD_REAPER_SWEEP_INTERVAL_MS=2000` — same end
+  state via `reapedBy: "sweep"` instead. Re-enabled notifications
+  (`config set notify-keyspace-events Ex`) afterward.
+
+All test rows/keys cleaned up afterward (`DELETE` on the seeded location/slot
+rows, `redis-cli FLUSHDB`).
+
+### Current environment state (as of pausing)
+
+- `phastos-redis` container: **running**, healthy, port 6379, `redisdata`
+  volume (currently empty — flushed after verification).
+- `phastos-postgres`: unchanged from Step 2, still running/healthy.
+- No HTTP endpoints call `SlotHoldService` yet — it's DI-wired into
+  `SlotsModule` but nothing in `apps/api` invokes it outside the ad hoc
+  verification scripts above. That's the "wire the actual `reservations`
+  HTTP endpoints" work still to come (see "After Redis" below).
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -123,22 +200,18 @@ All of the above passed at the time this was written.
    `libs/redis-scripts/src/redis-hold.scripts.ts` instead of separate
    `.lua` files — single source of truth, no build-step dependency.
 
-## Next step: Redis (not started)
+## Next step: RabbitMQ (not started)
 
-Planned scope (from the last proposal, still valid):
-- Add `redis` service to `docker-compose.yml`, with
-  `--notify-keyspace-events Ex` (needed for the hold-expiry reaper).
-- A Nest provider wiring `attachHoldScripts()` (already written, in
-  `libs/redis-scripts`) onto an injectable `ioredis` client in `apps/api`.
-- A `SlotHoldService` exposing `claim` / `confirm` / `release`, backed by
-  the three Lua scripts.
-- The reaper: keyspace-notification listener (fast path) + periodic
-  reconciliation sweep (correctness backstop) for expired-but-unreturned
-  holds — see `PLAN.md` §2.
+Per `PLAN.md`: confirmation email / reminder / receipt queues + DLQs,
+consumed by `notification-worker` (currently a health-only stub). Reminder
+scheduling is the **DB scheduler sweep → RabbitMQ** design (decision locked
+in above), not the delayed-exchange plugin — so this step likely also touches
+`libs/database` (a table/columns to track pending reminder sweeps) alongside
+`libs/rabbitmq-contracts` (currently a placeholder) and `apps/notification-worker`.
 
-## After Redis
+## After RabbitMQ
 
-Per `PLAN.md`: RabbitMQ (confirmation email / reminder / receipt queues +
-DLQs, `notification-worker`), then Kafka (`reservation-events` topic,
-`event-consumer`), then wiring the actual `reservations` HTTP endpoints in
-`apps/api` that tie Redis + Postgres + Kafka publish together end to end.
+Per `PLAN.md`: Kafka (`reservation-events` topic, `event-consumer`), then
+wiring the actual `reservations` HTTP endpoints in `apps/api` that tie
+Redis (`SlotHoldService`, already built) + Postgres + Kafka publish +
+RabbitMQ enqueue together end to end.
