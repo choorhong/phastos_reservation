@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Redis, before RabbitMQ
+## Status: paused after RabbitMQ, before Kafka
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -185,6 +185,110 @@ rows, `redis-cli FLUSHDB`).
   verification scripts above. That's the "wire the actual `reservations`
   HTTP endpoints" work still to come (see "After Redis" below).
 
+## Step 4 — RabbitMQ ✅
+
+- `docker-compose.yml`: added `rabbitmq:3-management` (management UI on
+  15672), named volume `rabbitmqdata`, healthcheck via
+  `rabbitmq-diagnostics check_port_connectivity`.
+- `.env.example` / `.env`: added `RABBITMQ_HOST/PORT/USER/PASSWORD`,
+  `NOTIFICATION_MAX_RETRIES` (3), `REMINDER_LEAD_MINUTES` (60),
+  `REMINDER_SWEEP_INTERVAL_MS` (60000).
+- `libs/database`: migration `AddReminderSentAtToReservations` adds
+  `reservations.reminder_sent_at` (nullable timestamptz) + a partial index
+  `WHERE reminder_sent_at IS NULL`. This is the claim column for the
+  reminder sweep below -- `reminderSentAt` added to the `Reservation`
+  entity.
+- `libs/rabbitmq-contracts/src/notification-messages.ts` (previously an
+  empty placeholder):
+  - Three queues (`confirmation-email`, `reminder`, `receipt`) per
+    PLAN.md §4, one `notifications` direct exchange + one
+    `notifications.dlx` DLX, each main queue's `x-dead-letter-exchange`
+    pointing at the DLX with its own routing key so a dead-lettered
+    message lands in that queue's own `*.dlq`, not a shared one.
+  - `assertNotificationsTopology(channel)` -- idempotent
+    assert/bind, run by both `apps/api` and `apps/notification-worker` on
+    startup so either can come up first.
+  - `publishNotification(channel, queue, payload, correlationId)` --
+    shared envelope-construction + publish, used by both apps' producer
+    code so the message shape/headers can't drift between them (mirrors
+    how `attachHoldScripts` centralizes the Redis-side equivalent).
+  - `RETRY_COUNT_HEADER` (`x-retry-count`) -- the header the consumer
+    reads/increments for the retry-then-DLQ policy.
+- `apps/api/src/modules/rabbitmq/` + `apps/notification-worker/src/modules/rabbitmq/`
+  (near-identical, kept app-local rather than shared since each app owns
+  its own connection lifecycle): `amqp-connection-manager` connection +
+  a `ChannelWrapper` whose `setup` runs `assertNotificationsTopology`.
+- `apps/api/src/modules/notifications/notifications-publisher.service.ts`
+  -- `NotificationsPublisherService.publishConfirmationEmail/publishReminder/publishReceipt`,
+  thin wrappers over `publishNotification`. Not called from anywhere yet
+  (no HTTP reservation-confirm flow exists) -- it's the integration point
+  that flow will use once built.
+- `apps/notification-worker/src/modules/notifications/`:
+  - `notification-consumers.service.ts` -- `NotificationConsumersService`
+    consumes all three queues. No real SendGrid/SES/PDF integration
+    (out of scope for this stage) -- the handler validates payload shape
+    and logs `notification.delivered`; a malformed payload is the
+    realistic failure mode exercised for the retry/DLQ path. On failure:
+    retry by republishing with `x-retry-count` incremented (up to
+    `NOTIFICATION_MAX_RETRIES`, ack the original), or past that,
+    `nack(msg, false, false)` so the queue's own DLX routing takes over
+    -- logs `notification.retry_scheduled` / `notification.dead_lettered`.
+  - `reminder-sweep.service.ts` -- `ReminderSweepService`, the DB-sweep
+    half of "Decisions" #2. A `SchedulerRegistry`-registered interval
+    (same pattern as the Redis hold reaper) queries confirmed
+    reservations with `reminder_sent_at IS NULL` whose slot starts within
+    `REMINDER_LEAD_MINUTES`; for each, does a conditional
+    `UPDATE ... WHERE reminder_sent_at IS NULL` (the claim -- guards
+    against double-enqueue across overlapping ticks/instances) and only
+    publishes to the `reminder` queue if that claim succeeded.
+- `AppModule` (both apps): wired in `ScheduleModule.forRoot()` (notification-worker
+  needed it fresh; api already had it from the Redis reaper),
+  `RabbitmqModule`/`NotificationsModule`, and (`notification-worker` only)
+  `DatabaseModule`, since the reminder sweep reads Postgres directly.
+
+### Verified (ad hoc scripts, not committed)
+
+Ran via `npx ts-node -r tsconfig-paths/register <script>.ts` against real
+Postgres + RabbitMQ containers, with both `api` and `notification-worker`
+built and running (`node dist/apps/<app>/main.js`):
+
+- `rabbitmqctl list_queues` after both apps booted: all 6 queues present
+  (3 main + 3 DLQ) with correct `x-dead-letter-exchange`/
+  `-routing-key` arguments, each main queue showing 1 active consumer.
+- Published a valid `confirmation-email` message via
+  `NotificationsPublisherService` (from an `api` application-context
+  script) → `notification-worker` logged `notification.delivered` for it.
+- Published a malformed message (missing `reservationId`/`userId`)
+  directly to `q.confirmation-email` → two `notification.retry_scheduled`
+  lines (`retryCount: 1`, `retryCount: 2`), then `notification.dead_lettered`
+  → `q.confirmation-email.dlq` held 1 message, main queue 0 (matches
+  `NOTIFICATION_MAX_RETRIES=3`: attempts 0/1/2, dead-letter on the 3rd
+  failure).
+- Reminder sweep: seeded a confirmed reservation with a slot starting in
+  30 minutes (`REMINDER_LEAD_MINUTES=60` default), ran
+  `notification-worker` with `REMINDER_SWEEP_INTERVAL_MS=2000` for ~5s
+  (≥2 sweep ticks) → exactly one `reminder.sweep.enqueued` +
+  `notification.delivered` pair (no duplicate across ticks -- confirms
+  the `reminder_sent_at` claim guard), and `reservations.reminder_sent_at`
+  was set in Postgres.
+
+All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
+`rabbitmqctl purge_queue` on the DLQ and `q.reminder`).
+
+### Current environment state (as of pausing)
+
+- `phastos-rabbitmq` container: **running**, healthy, ports 5672 (AMQP) /
+  15672 (management UI, `phastos`/`phastos`).
+- `phastos-postgres`, `phastos-redis`: unchanged, still running/healthy.
+- Migration `AddReminderSentAtToReservations1789463728849` applied to the
+  running Postgres instance.
+- No HTTP endpoints call `NotificationsPublisherService` yet (same caveat
+  as `SlotHoldService` after Step 3) -- confirmation-email/receipt
+  publishing is wired and ready but nothing in the request path invokes
+  it. The reminder sweep is the one path that's actually live end-to-end
+  without an HTTP layer, since it's driven by `notification-worker`'s own
+  cron, not a request.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -200,18 +304,22 @@ rows, `redis-cli FLUSHDB`).
    `libs/redis-scripts/src/redis-hold.scripts.ts` instead of separate
    `.lua` files — single source of truth, no build-step dependency.
 
-## Next step: RabbitMQ (not started)
+## Next step: Kafka (not started)
 
-Per `PLAN.md`: confirmation email / reminder / receipt queues + DLQs,
-consumed by `notification-worker` (currently a health-only stub). Reminder
-scheduling is the **DB scheduler sweep → RabbitMQ** design (decision locked
-in above), not the delayed-exchange plugin — so this step likely also touches
-`libs/database` (a table/columns to track pending reminder sweeps) alongside
-`libs/rabbitmq-contracts` (currently a placeholder) and `apps/notification-worker`.
+Per `PLAN.md` §3: single `reservation-events` topic, partitioned by
+`slotId`, 4 event types (`ReservationRequested/Confirmed/Cancelled`,
+`SlotReleased`) in one envelope shape, consumed by `event-consumer`
+(currently a health-only stub, port 3002). `libs/kafka-contracts` already
+has the full envelope + payload types from PLAN.md written (Step 1) — this
+step is mostly `docker-compose.yml` (`kafka` in KRaft mode + `kafka-ui` for
+inspection, both in PLAN.md §5), a producer wired into `apps/api`, and
+`event-consumer`'s actual consumer group + the idempotent-consumption
+pattern (`processed_events` table or Redis `SETNX`, PLAN.md §3).
 
-## After RabbitMQ
+## After Kafka
 
-Per `PLAN.md`: Kafka (`reservation-events` topic, `event-consumer`), then
-wiring the actual `reservations` HTTP endpoints in `apps/api` that tie
-Redis (`SlotHoldService`, already built) + Postgres + Kafka publish +
-RabbitMQ enqueue together end to end.
+Per `PLAN.md`: wiring the actual `reservations` HTTP endpoints in
+`apps/api` that tie Redis (`SlotHoldService`) + Postgres + Kafka publish +
+RabbitMQ enqueue (`NotificationsPublisherService`) together end to end —
+everything built in Steps 2-4 is ready and waiting for this; it's the
+first point where any of it is reachable over HTTP.
