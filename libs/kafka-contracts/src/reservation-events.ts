@@ -47,7 +47,7 @@ export interface ReservationCancelledPayload {
   reservationId: string;
   userId: string;
   cancelledAt: string;
-  reason: 'user_cancelled' | 'hold_expired' | 'admin_cancelled' | 'payment_failed';
+  reason: 'user_cancelled' | 'hold_expired' | 'admin_cancelled';
 }
 
 export interface SlotReleasedPayload {

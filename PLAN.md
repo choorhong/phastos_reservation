@@ -320,7 +320,6 @@ of blocking the request → RabbitMQ.
 |---|---|---|
 | Claim a slot hold | Direct (in-process, → Redis) | User is waiting on the response; must be sub-100ms |
 | Confirm reservation (checkout) | Direct (in-process, → Postgres tx) | Same — result gates what the user sees next |
-| Payment authorization | Direct (synchronous call to payment provider/service) | Confirmation must not happen before payment is authorized — this has to complete or fail before the HTTP response |
 | Publish lifecycle event | Direct producer call (→ Kafka) from within the request path | Fire-and-forget to the log, but the produce call itself is fast (no external dependency, no retry policy needed beyond Kafka's own) |
 | Confirmation email | **RabbitMQ** (`notification-worker`) | Slow/unreliable third-party (SendGrid/SES); needs retry + DLQ; must never block checkout |
 | Reminder notification (e.g. T-1hr before appointment) | **RabbitMQ**, published via a delayed-message plugin or a scheduler that enqueues at the right time | Same — external delivery, needs retry |
