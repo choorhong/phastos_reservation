@@ -5,9 +5,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Logger } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
 import { Repository } from 'typeorm';
-import { ACTIVE_SLOTS_KEY, slotKeys } from '@app/redis-scripts';
-import { Reservation, Slot } from '@app/database';
-import { REDIS_CLIENT } from '@/modules/redis/redis-client.provider';
+import { ACTIVE_SLOTS_KEY, slotKeys } from '@lib/redis-scripts';
+import { Reservation, Slot } from '@lib/database';
+import { REDIS_CLIENT } from '@app/api/modules/redis/redis-client.provider';
 import { HoldExpiredError, SlotNotLoadedError, SlotSoldOutError } from './slot-hold.errors';
 
 export interface SlotHold {
@@ -19,7 +19,7 @@ export interface SlotHold {
 
 /**
  * Claim/confirm/release lifecycle for a slot hold, backed by the three
- * atomic Lua scripts in `@app/redis-scripts` (PLAN.md §2). Redis is a cache
+ * atomic Lua scripts in `@lib/redis-scripts` (PLAN.md §2). Redis is a cache
  * of Postgres-derived availability, not the source of truth: on a cache
  * miss (`SlotNotLoadedError` from the script) this service recomputes
  * `capacity - COUNT(confirmed)` from Postgres and seeds the cache with

@@ -8,7 +8,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import type { ReservationCancelReason, ReservationStatus } from '@app/domain';
+import type { ReservationCancelReason, ReservationStatus } from '@lib/domain';
 import { Slot } from './slot.entity';
 
 /**

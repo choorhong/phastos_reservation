@@ -1,7 +1,7 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ObservabilityModule } from '@app/common';
-import { DatabaseModule } from '@app/database';
+import { ObservabilityModule } from '@lib/common';
+import { DatabaseModule } from '@lib/database';
 import { EventsModule } from './modules/events/events.module';
 
 @Controller('health')

@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { RabbitmqModule } from '@/modules/rabbitmq/rabbitmq.module';
+import { RabbitmqModule } from '@app/api/modules/rabbitmq/rabbitmq.module';
 import { NotificationsPublisherService } from './notifications-publisher.service';
 
 @Module({

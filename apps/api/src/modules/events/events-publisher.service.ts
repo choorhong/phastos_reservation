@@ -6,8 +6,8 @@ import {
   ReservationConfirmedPayload,
   ReservationRequestedPayload,
   SlotReleasedPayload,
-} from '@app/kafka-contracts';
-import { KAFKA_PRODUCER } from '@/modules/kafka/kafka-producer.provider';
+} from '@lib/kafka-contracts';
+import { KAFKA_PRODUCER } from '@app/api/modules/kafka/kafka-producer.provider';
 
 interface EventContext {
   slotId: string;

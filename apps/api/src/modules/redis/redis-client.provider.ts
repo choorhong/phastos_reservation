@@ -1,7 +1,7 @@
 import { Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { attachHoldScripts } from '@app/redis-scripts';
+import { attachHoldScripts } from '@lib/redis-scripts';
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const REDIS_SUBSCRIBER_CLIENT = Symbol('REDIS_SUBSCRIBER_CLIENT');

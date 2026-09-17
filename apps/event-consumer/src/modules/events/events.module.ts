@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ProcessedEvent } from '@app/database';
-import { KafkaModule } from '@/modules/kafka/kafka.module';
+import { ProcessedEvent } from '@lib/database';
+import { KafkaModule } from '@app/event-consumer/modules/kafka/kafka.module';
 import { EventsConsumerService } from './events-consumer.service';
 
 @Module({

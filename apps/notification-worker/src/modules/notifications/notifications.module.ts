@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Reservation } from '@app/database';
-import { RabbitmqModule } from '@/modules/rabbitmq/rabbitmq.module';
+import { Reservation } from '@lib/database';
+import { RabbitmqModule } from '@app/notification-worker/modules/rabbitmq/rabbitmq.module';
 import { NotificationConsumersService } from './notification-consumers.service';
 import { ReminderSweepService } from './reminder-sweep.service';
 

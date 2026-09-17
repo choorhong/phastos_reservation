@@ -1,7 +1,7 @@
 import { Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Consumer, Kafka } from 'kafkajs';
-import { ensureReservationEventsTopic, RESERVATION_EVENTS_TOPIC } from '@app/kafka-contracts';
+import { ensureReservationEventsTopic, RESERVATION_EVENTS_TOPIC } from '@lib/kafka-contracts';
 
 export const KAFKA_CONSUMER = Symbol('KAFKA_CONSUMER');
 

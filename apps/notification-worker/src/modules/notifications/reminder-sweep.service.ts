@@ -6,9 +6,9 @@ import { Logger } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 import { Between, IsNull, Repository } from 'typeorm';
-import { Reservation } from '@app/database';
-import { publishNotification } from '@app/rabbitmq-contracts';
-import { RABBITMQ_CHANNEL } from '@/modules/rabbitmq/rabbitmq-connection.provider';
+import { Reservation } from '@lib/database';
+import { publishNotification } from '@lib/rabbitmq-contracts';
+import { RABBITMQ_CHANNEL } from '@app/notification-worker/modules/rabbitmq/rabbitmq-connection.provider';
 
 const SWEEP_INTERVAL_NAME = 'reminder-sweep';
 

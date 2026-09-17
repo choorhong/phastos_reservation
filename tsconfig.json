@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "ignoreDeprecations": "5.0",
     "module": "commonjs",
     "declaration": true,
     "removeComments": true,
@@ -19,18 +20,21 @@
     "noFallthroughCasesInSwitch": false,
     "esModuleInterop": true,
     "paths": {
-      "@app/domain": ["libs/domain/src"],
-      "@app/domain/*": ["libs/domain/src/*"],
-      "@app/kafka-contracts": ["libs/kafka-contracts/src"],
-      "@app/kafka-contracts/*": ["libs/kafka-contracts/src/*"],
-      "@app/redis-scripts": ["libs/redis-scripts/src"],
-      "@app/redis-scripts/*": ["libs/redis-scripts/src/*"],
-      "@app/database": ["libs/database/src"],
-      "@app/database/*": ["libs/database/src/*"],
-      "@app/rabbitmq-contracts": ["libs/rabbitmq-contracts/src"],
-      "@app/rabbitmq-contracts/*": ["libs/rabbitmq-contracts/src/*"],
-      "@app/common": ["libs/common/src"],
-      "@app/common/*": ["libs/common/src/*"]
+      "@lib/domain": ["./libs/domain/src"],
+      "@lib/domain/*": ["./libs/domain/src/*"],
+      "@lib/kafka-contracts": ["./libs/kafka-contracts/src"],
+      "@lib/kafka-contracts/*": ["./libs/kafka-contracts/src/*"],
+      "@lib/redis-scripts": ["./libs/redis-scripts/src"],
+      "@lib/redis-scripts/*": ["./libs/redis-scripts/src/*"],
+      "@lib/database": ["./libs/database/src"],
+      "@lib/database/*": ["./libs/database/src/*"],
+      "@lib/rabbitmq-contracts": ["./libs/rabbitmq-contracts/src"],
+      "@lib/rabbitmq-contracts/*": ["./libs/rabbitmq-contracts/src/*"],
+      "@lib/common": ["./libs/common/src"],
+      "@lib/common/*": ["./libs/common/src/*"],
+      "@app/api/*": ["./apps/api/src/*"],
+      "@app/notification-worker/*": ["./apps/notification-worker/src/*"],
+      "@app/event-consumer/*": ["./apps/event-consumer/src/*"]
     }
   }
 }

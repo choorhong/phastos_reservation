@@ -3,8 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { Logger } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
-import { ACTIVE_SLOTS_KEY } from '@app/redis-scripts';
-import { REDIS_CLIENT, REDIS_SUBSCRIBER_CLIENT } from '@/modules/redis/redis-client.provider';
+import { ACTIVE_SLOTS_KEY } from '@lib/redis-scripts';
+import { REDIS_CLIENT, REDIS_SUBSCRIBER_CLIENT } from '@app/api/modules/redis/redis-client.provider';
 
 const EXPIRED_HOLD_PATTERN = /^hold:\{([^}]+)\}:(.+)$/;
 const SWEEP_INTERVAL_NAME = 'slot-hold-reaper-sweep';

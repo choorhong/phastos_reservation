@@ -2,7 +2,7 @@ import { Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as amqp from 'amqp-connection-manager';
 import type { AmqpConnectionManager, ChannelWrapper } from 'amqp-connection-manager';
-import { assertNotificationsTopology } from '@app/rabbitmq-contracts';
+import { assertNotificationsTopology } from '@lib/rabbitmq-contracts';
 
 export const RABBITMQ_CONNECTION = Symbol('RABBITMQ_CONNECTION');
 export const RABBITMQ_CHANNEL = Symbol('RABBITMQ_CHANNEL');
