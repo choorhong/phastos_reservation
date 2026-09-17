@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Kafka, before wiring HTTP reservation endpoints
+## Status: paused after wiring HTTP reservation endpoints
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -377,6 +377,114 @@ All test rows cleaned up afterward (`DELETE FROM processed_events`).
   built and independently verified; none of them are reachable over HTTP
   yet. That's the next and last step.
 
+## Step 6 — HTTP reservation endpoints ✅
+
+- Added `class-validator`/`class-transformer`; `main.ts` now installs a
+  global `ValidationPipe({ whitelist: true, transform: true })`.
+- `apps/api/src/modules/reservations/` — new module tying together all
+  four infra legs per PLAN.md §4's direct-vs-queue split:
+  - `dto/create-reservation.dto.ts` (`slotId` UUID, `userId` string),
+    `dto/cancel-reservation.dto.ts` (optional `reason`, restricted to the
+    two user-facing `ReservationCancelReason` values — `hold_expired` is
+    system-set (by the reaper), not client-settable).
+  - `reservations.service.ts`:
+    - `requestHold` — validates the slot exists (clean 404 instead of
+      letting `SlotHoldService`'s internal `findOneOrFail` throw),
+      `SlotHoldService.claim` (`SlotSoldOutError` → 409), inserts the
+      `Reservation` row (`status: held`), then
+      `EventsPublisherService.publishReservationRequested`.
+    - `confirm` — idempotent if already `confirmed` (returns as-is);
+      409 if in any other non-`held` state; `SlotHoldService.confirm`
+      (`HoldExpiredError` → marks the row `expired` and returns 410 Gone);
+      on success updates to `confirmed`, then
+      `publishReservationConfirmed` (Kafka) +
+      `publishConfirmationEmail`/`publishReceipt` (RabbitMQ).
+    - `cancel` — idempotent if already `cancelled`; 409 if `expired`;
+      works uniformly for both `held` and `confirmed` reservations by
+      always calling `SlotHoldService.release` — see the important note
+      below on why this is correct for both cases; updates to
+      `cancelled`, then `publishReservationCancelled` +
+      `publishSlotReleased`.
+    - Kafka/RabbitMQ publish failures after the Postgres write are caught
+      and logged (`*_publish_failed`), never surfaced as an error response
+      — a booking that's durably committed to Postgres must not look
+      failed to the client just because a downstream event/notification
+      publish blipped.
+  - `reservations.controller.ts` — `POST /reservations`,
+    `POST /reservations/:id/confirm`, `POST /reservations/:id/cancel`
+    (`ParseUUIDPipe` on `:id`).
+  - Correlation ID for every publish comes from `ClsService.getId()` (the
+    CLS-generated/propagated request ID from `ObservabilityModule`) — note
+    this is `getId()`, not `cls.get('correlationId')` as that module's own
+    doc comment says; the `idGenerator` option only populates the CLS ID
+    slot, not a `'correlationId'` key, so `get('correlationId')` would
+    always return `undefined`. Left the existing comment as-is (out of
+    scope for this step) but don't copy that pattern into new code.
+- **Important, easy-to-get-wrong behavior**: `cancel` calls
+  `SlotHoldService.release` unconditionally, for both `held` and
+  `confirmed` reservations, and this is correct rather than a bug: the
+  Redis `RELEASE_SCRIPT` (`libs/redis-scripts`) always does `INCR` on
+  `slot:{slotId}:available` regardless of whether the hold key still
+  exists. For a `held` reservation this is the normal "return the pending
+  unit" path. For a `confirmed` one, the hold key is already gone (confirm
+  deleted it) so the `DEL`/`ZREM` lines are no-ops, but the `INCR` still
+  fires — which is exactly what should happen, since cancelling a
+  confirmed booking must free that slot's capacity back to the pool for
+  other users. Verified explicitly (see below).
+- `AppModule`: added `ReservationsModule`.
+
+### Verified (ad hoc curl + raw Kafka/RabbitMQ checks against real containers)
+
+Built and ran `api`, `notification-worker`, `event-consumer`
+(`node dist/apps/<app>/main.js`) against real Postgres/Redis/RabbitMQ/Kafka,
+seeded one capacity-1 location/slot:
+
+- `POST /reservations` (user-A) → `201`, `status: held`.
+- `POST /reservations` (user-B, same slot) → `409 SlotSoldOutError` message.
+- `POST /reservations/:id/confirm` → `200`, `status: confirmed`; calling it
+  again → `200` with the same body (idempotent), no duplicate Kafka event.
+- `POST /reservations/:id/cancel` on the now-`confirmed` reservation → `200`,
+  `status: cancelled`; `redis-cli GET slot:{slotId}:available` back to `1`;
+  a fresh `POST /reservations` (user-C) on the same slot → `201` (capacity
+  genuinely freed, not just a Postgres-side status flip).
+- `POST /reservations/:id/confirm` on an unknown UUID → `404`;
+  `POST /reservations` with an unknown `slotId` → `404`.
+- `rabbitmqctl list_queues` showed 1 message each in `q.confirmation-email`
+  / `q.receipt` right after confirm; starting `notification-worker` drained
+  both with `notification.delivered` log lines.
+- Read `reservation-events` partition 0 directly
+  (`kafka-console-consumer --partition 0 --offset 0`): all 5 events from
+  the run appeared in order with correct payloads —
+  `ReservationRequested`(A) → `ReservationConfirmed`(A) →
+  `ReservationCancelled`(A) → `SlotReleased` → `ReservationRequested`(C).
+  (Starting `event-consumer` fresh showed 0 lag / no `reservation_event.processed`
+  logs for this partition — a `kafkajs` consumer-group-first-assignment
+  quirk, defaults to latest rather than earliest for a partition the group
+  has never committed an offset on before; not a bug in the publish path,
+  confirmed by reading the partition directly instead.)
+
+All test rows/messages/keys cleaned up afterward (`DELETE` on seeded
+location/slot/reservations, `redis-cli FLUSHDB`, `DELETE FROM
+processed_events`).
+
+### Current environment state (as of pausing)
+
+- All four containers (`phastos-postgres`, `phastos-redis`,
+  `phastos-rabbitmq`, `phastos-kafka` + `phastos-kafka-ui`) running,
+  healthy — brought back up this session after a prior pause (`docker
+  compose up -d`; data persisted in the named volumes).
+- No `api`/`notification-worker`/`event-consumer` processes left running.
+- No payment step, by design — this is a free appointment-booking system
+  (Apple Genius Bar-style), not a paid reservation, so there's nothing to
+  authorize between hold and confirm. `payment_failed` was removed from
+  `ReservationCancelReason` (`libs/domain`) and
+  `ReservationCancelledPayload.reason` (`libs/kafka-contracts`), and the
+  "Payment authorization" row was dropped from PLAN.md §4's table — it
+  never matched what this system actually does.
+- No `GET /reservations/:id` (or any read/list endpoint) yet — out of
+  scope for this step, which was specifically "wire the write/lifecycle
+  endpoints"; add one if a client needs to poll reservation status.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -391,22 +499,74 @@ All test rows cleaned up afterward (`DELETE FROM processed_events`).
    scripts as TS template literal constants directly in
    `libs/redis-scripts/src/redis-hold.scripts.ts` instead of separate
    `.lua` files — single source of truth, no build-step dependency.
+3. **Editor-only "File X is not under 'rootDir' Y" errors on cross-lib
+   imports** (e.g. opening `apps/api/src/app.module.ts`, which imports
+   `@app/common`/`@app/database`) — none of `tsconfig.app.json`/
+   `tsconfig.lib.json` ever set `rootDir` explicitly, leaving it to be
+   *inferred* from whichever files end up in the compiled program. Plain
+   `tsc` and `nest build` (webpack) both infer it correctly (common
+   ancestor of every file actually pulled in via `@app/*` path mapping =
+   the repo root) — verified by direct emit, output correctly
+   nested under `dist/<...>/libs/...`. An editor's live TS-server
+   instance, though, can end up inferring a narrower `rootDir` (seen:
+   the app's own folder) for a given open file, wrongly flagging any
+   cross-lib import as outside it. Fixed by setting `"rootDir": "../.."`
+   (the repo root, matching the already-correct `"baseUrl"`) explicitly
+   in every `tsconfig.app.json` and `tsconfig.lib.json` — removes the
+   inference step entirely rather than trying to fix the inference.
+   Confirmed harmless for the real build path: `nest build <app>` uses
+   webpack (not raw `tsc` emit), so it still produces a single clean
+   `dist/apps/<app>/main.js` regardless of `rootDir` — the "mirrors the
+   full rootDir-relative path" behavior from gotcha #1 only ever applies
+   to a bypassed, non-webpack `tsc -p ... ` emit, which nothing here uses.
+4. **`@/*` retired in favor of `@app/<app>/*`.** The original convention
+   (commit `dad167b`) used the *same* alias name `@/*` in every app,
+   scoped to that app's own `tsconfig.app.json` (`@/foo` meant "this
+   app's own src", identically worded in every app). That meant the
+   `@app/*` lib aliases had to be fully re-declared alongside `@/*` in
+   every `tsconfig.app.json`/`tsconfig.lib.json` — TypeScript's `extends`
+   does not merge a child's `paths` with the base's, it replaces the
+   whole map, so any config that added its own alias had to restate every
+   inherited one too. Switched to per-app aliases living once in the root
+   `tsconfig.json` — `@app/api/*`, `@app/notification-worker/*`,
+   `@app/event-consumer/*` (alongside the existing flat `@app/<lib>`
+   entries) — so every `tsconfig.app.json` now inherits the full `paths`
+   map untouched and needs nothing but `outDir`/`rootDir` of its own.
+   Updated all import sites (14 in `apps/api`, 3 in
+   `apps/notification-worker`, 2 in `apps/event-consumer`) from
+   `@/modules/...` to `@app/<app>/modules/...`. Trade-off accepted
+   knowingly: a module's own imports now name the app it lives in, so
+   copying a module between apps means updating its imports, unlike the
+   old scheme where `@/` read identically everywhere.
+5. **Lib aliases split from `@app/*` to `@lib/*`.** Once apps had their own
+   `@app/<app>/*` aliases, the existing lib aliases (`@app/domain`,
+   `@app/database`, etc.) became ambiguous — `@app/domain` and `@app/api`
+   looked structurally identical despite one being a lib and the other an
+   app. Renamed every lib alias to `@lib/<lib>` (`@lib/domain`,
+   `@lib/database`, `@lib/kafka-contracts`, `@lib/redis-scripts`,
+   `@lib/rabbitmq-contracts`, `@lib/common`), so the prefix alone now says
+   which kind of thing you're importing: `@app/*` only ever means "an app
+   in this monorepo," `@lib/*` only ever means "a shared lib." Updated all
+   28 import sites across 22 files (every app + every lib that
+   cross-references another lib, e.g. `libs/database`'s entities importing
+   `@lib/domain`'s types) plus the six `libs/*/tsconfig.lib.json` doc
+   comments that mentioned the old name. Verified via the same three
+   checks as gotcha #4 (`tsc --noEmit` on all 9 projects, `nest build` on
+   all 3 apps, real boot + `/health` on all 3 apps against live containers)
+   plus one this rename specifically touches: `npm run typeorm --
+   migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
+   path-resolution mechanism from webpack) still resolves `@lib/domain`
+   correctly through `data-source.ts`'s entities.
 
-## Next step: wire the actual `reservations` HTTP endpoints (not started)
+## Next step: auth/authz (not started)
 
-All four infrastructure legs are built and independently verified:
-`SlotHoldService` (Redis, Step 2), the Postgres schema + capacity trigger
-(Step 2), `NotificationsPublisherService` (RabbitMQ, Step 4), and
-`EventsPublisherService` (Kafka, Step 5). None of them are reachable over
-HTTP yet -- this is the step that ties them together: `POST` a reservation
-request → `SlotHoldService.claim` → Postgres insert (`held`) →
-`EventsPublisherService.publishReservationRequested`; a confirm/checkout
-path → `SlotHoldService.confirm` → Postgres update to `confirmed` (inside
-the capacity-trigger-guarded transaction) →
-`NotificationsPublisherService.publishConfirmationEmail`/`publishReceipt` +
-`EventsPublisherService.publishReservationConfirmed`; a cancel path →
-`SlotHoldService.release` → Postgres update to `cancelled` →
-`EventsPublisherService.publishReservationCancelled`/`publishSlotReleased`.
-Per PLAN.md §4's direct-vs-queue table, the Redis/Postgres/Kafka-publish
-calls are synchronous in the request path; only the RabbitMQ enqueues are
-fire-and-forget.
+All four infrastructure legs and the reservation lifecycle HTTP endpoints
+(Step 6) are built and verified end-to-end. No payment step is planned —
+this is a free appointment-booking system (Apple Genius Bar-style), not a
+paid reservation. What's left before this is a real system:
+
+- **Auth/authz**: every endpoint currently trusts a client-supplied
+  `userId` with no verification — there's no auth layer at all yet. Fine
+  for continued local iteration, not fine beyond that.
+- No read/list endpoints (`GET /reservations/:id`, `GET /slots?...` for
+  browsing availability) — add if/when a client needs them.
