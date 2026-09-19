@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after `GET /reservations`, reservation responses with local times, and the `@lib/time` lib (Step 12)
+## Status: paused after adding the end-to-end test suite and fixing the two gaps it found (Step 13)
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -998,6 +998,147 @@ reservation endpoints (Step 12) now do this. Still to do:
   from this step were deleted. Dev database: Orchard and Santa Monica (84
   slots each), the admin, and the older `@example.com` test users.
 
+## Step 13 — End-to-end test suite ✅
+
+### How to run
+
+```bash
+docker compose up -d          # Postgres, Redis, RabbitMQ, Kafka must be up
+cp .env.example .env          # if not already there (hosts, credentials, JWT secret)
+npm run test:e2e              # ~20s; boots the real api and drives it over HTTP
+npm test                      # the fast unit tests only (does not touch the e2e suite)
+npm run test:e2e:db           # just (re)prepare the test database, without running tests
+E2E_LOGS=1 npm run test:e2e   # same, with the app's logs switched back on
+```
+
+### What it does
+
+- **Real app, real services.** `createApp()` boots the actual `AppModule`
+  (same `configureApp()` request handling as `main.ts`, now shared in
+  `apps/api/src/app.setup.ts`) against the docker-compose Postgres, Redis,
+  RabbitMQ and Kafka, listening on a free port, driven with `supertest`.
+- **Isolated database.** A separate `phastos_reservation_test` database, so
+  the dev data is never touched. `test/e2e/setup-db.ts` (run by jest's
+  `globalSetup`) checks all four services are reachable (with a hint to run
+  `docker compose up -d` if not), creates the database if missing, runs the
+  migrations and truncates every table, so each run starts empty. Redis keys
+  are UUID-scoped per slot and each suite deletes the ones it touched.
+- **Deterministic config.** `test/e2e/env.ts` overrides what the tests rely
+  on (test DB name, admin credentials, `HOLD_TTL_SECONDS=3`, and the slot
+  rule 10–18 / 2h / capacity 3 / 30 days). dotenv never overrides an
+  already-set variable, so these win over `.env`; everything else still
+  comes from `.env`.
+- **Real brokers are exercised.** Kafka and RabbitMQ publishers are
+  spied on *pass-through* (calls still reach the brokers) and the tests
+  assert every publish resolved — the service only logs publish failures,
+  so without this a broken broker would go unnoticed.
+- Files: `test/e2e/{auth,catalog,reservations}.e2e-spec.ts` plus
+  `support.ts` (helpers), `env.ts`, `setup-db.ts`, `global-setup.ts`;
+  config in `jest.e2e.config.js` and `test/tsconfig.json`.
+
+### What is covered (72 tests)
+
+- **Auth & access (25):** register/login validation, duplicate email, a
+  client-supplied `role: admin` ignored, login errors indistinguishable,
+  every protected route → 401 without a token (and with a garbage/tampered
+  one), the three admin-only routes → 403 for a user.
+- **Locations & slots (~25):** location validation, slots generated on
+  location creation (weekdays only, 10–18 in 2h blocks, 3 spots, none in the
+  past or beyond 30 days, four per full day), generation idempotent, `POST
+  /slots` gone, Singapore vs Los Angeles local times for the same date,
+  `?date` filtering and its 400/404 cases, closing/reopening a slot via
+  `PATCH` (survives a generation run), capacity validation.
+- **Reservations (~20):** hold → confirm → cancel with the slot's
+  availability checked in both Postgres and Redis at each step; events and
+  notifications published and accepted by the brokers; idempotent confirm
+  and cancel (no double publish); cancelling an unconfirmed hold; a
+  cancelled reservation can't be confirmed; bad ids; system-only cancel
+  reason rejected; `GET /reservations` scoped to the caller, soonest first,
+  status filter; ownership (other user 403, admin allowed, a `userId` in the
+  body ignored); a full slot turns the 4th person away and admits them after
+  a cancel; closed slots; `PATCH` can't shrink below active reservations and
+  updates the live Redis counter; **12 people racing for 3 spots → exactly 3
+  win** (Postgres rows, Redis counter and reported availability all agree,
+  and 3 simultaneous confirms leave exactly 3 confirmed); 10 racing for the
+  last spot → exactly 1; hold expiry hands the spot to the next person and
+  the late confirm gets 410; an abandoned hold becomes `expired` in Postgres
+  with the `hold_expired` events published and stops blocking the admin; a
+  hold confirmed in time is left alone; the Postgres capacity trigger
+  refuses to overfill with Redis bypassed, and when the Redis counter is
+  deliberately made stale (→ 409, reservation closed off).
+
+### Findings (things the suite showed that were not known before)
+
+1. **An abandoned hold was never marked `expired` in Postgres — FIXED.** The
+   reaper only returned the spot in Redis, so the row stayed `held` forever:
+   it permanently lowered `available` on `GET /slots` (which counts
+   `held`), showed as `held` in the user's `GET /reservations`, and stopped
+   an admin shrinking that slot. (No overbooking: the DB trigger counts only
+   `confirmed`.) Now `HoldReaperService` also moves the row to `expired`
+   with `cancelReason: 'hold_expired'` — conditionally on it still being
+   `held`, so a confirm/cancel that got there first wins and nothing is
+   published twice — and publishes `ReservationCancelled` and `SlotReleased`
+   with reason `hold_expired` (the events `libs/kafka-contracts` already
+   defined and nothing sent). `SlotsModule` now imports `EventsModule`.
+   Consequences: a late confirm on a reaper-expired reservation still
+   returns **410 Gone** (`confirm` maps `expired` → 410 instead of the
+   generic 409), and the confirm-time expiry path sets the same
+   `hold_expired` reason. A failure while expiring is logged
+   (`slot.hold.expire_reservation_failed`) and never stops the reaper.
+2. **A confirm blocked by the Postgres capacity trigger returned a bare 500 —
+   FIXED.** With a stale Redis counter the trigger correctly refuses the
+   second confirmation (invariant tested), and the API now answers
+   `409 Slot … is already full` and closes the reservation off as
+   `cancelled` (its Redis hold is already consumed, so nothing would ever
+   clean up a `held` row) instead of leaving it dangling. No events are
+   published for that cancellation, and the Redis counter is left alone
+   (it was stale-high, so it is already wrong in the safe direction).
+   Writing the test caught a bug in the first version of this fix: saving the
+   entity again wrote its in-memory `confirmedAt` into the cancelled row; it
+   now uses a targeted `update`.
+3. **The same user can hold several spots in one slot** — `requestHold` has
+   no per-user check, so one account can take all 3 spots. Seen by reading
+   the code; not tested, and it may be fine if that is intended. **Open.**
+4. **Nothing closed the Kafka/RabbitMQ/Redis connections on shutdown —
+   FIXED**, so jest could not exit after `app.close()` and a real SIGTERM
+   killed the process without closing them. `KafkaShutdownService`,
+   `RabbitmqShutdownService` and `RedisShutdownService` close them in
+   `onApplicationShutdown` (after every module's own destroy hooks, so the
+   hold reaper can still unsubscribe), and `main.ts` now calls
+   `app.enableShutdownHooks()`. Checked on the built app: SIGTERM → exits in
+   about a second, no errors, Redis client list back to just the CLI.
+
+### Things worth knowing
+
+- **Test data reaches the real Kafka topic and RabbitMQ queues.** Only
+  Postgres is isolated; the brokers are the dev ones, so a running
+  `event-consumer` or `notification-worker` will see the test events (for
+  users/reservations that don't exist in the dev database).
+- **`@nestjs/jwt` 12 is ESM-only**, which jest (CommonJS) can't load, so the
+  e2e config transpiles that one package (`allowJs` in `test/tsconfig.json`
+  plus a `transformIgnorePatterns` exception). The webpack builds are
+  unaffected.
+- `libs/common` request logging is now `silent` when `NODE_ENV=test` (jest
+  sets it); `E2E_LOGS=1` restores it.
+- The hold-expiry tests wait for the 3 s TTL plus the reaper, so they are
+  the slow ones (a few seconds each; the whole suite takes ~25 s). Timing-based waits poll (`eventually`)
+  instead of sleeping a fixed time.
+- Not covered: the notification-worker and event-consumer apps, the reminder
+  sweep, and reading the events back off Kafka/RabbitMQ (only that the
+  publishes succeeded). A test that drives those needs the other apps
+  booted too.
+- A kafkajs `TimeoutNegativeWarning` line appears in the output. It comes
+  from inside kafkajs's request queue and is harmless (Node clamps it to
+  1 ms).
+
+### Current environment state (as of pausing)
+
+- Containers unchanged and healthy; nothing running. A
+  `phastos_reservation_test` database now exists alongside the dev one (it
+  is emptied at the start of each e2e run). The dev database is unchanged:
+  Orchard and Santa Monica with 84 slots each, the admin and the older
+  `@example.com` users. No leftover Redis keys.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1097,19 +1238,20 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: end-to-end tests, then real notifications
+## Next step: real notifications, unit tests for config, then CI
 
 **Suggested order:**
 
-1. **Tests.** There are none today. Start with unit tests for `@lib/config`
-   (parsers, missing-variable error, `list`/`boolean`), then one
-   end-to-end test of the reservation flow that has so far only been
-   checked by ad hoc scripts (auth incl. the 401/403 paths, hold, confirm,
-   cancel, full slot), run against the docker-compose containers.
-2. **Real notifications:** add the location's timezone to the RabbitMQ
+1. **Decide whether one user may hold more than one spot in the same slot**
+   (Step 13, finding 3) — the two real gaps the e2e suite found are fixed.
+2. **Unit tests for `@lib/config`** (parsers, missing-variable error,
+   `list`/`boolean`) — the e2e suite exercises config only indirectly.
+3. **Real notifications:** add the location's timezone to the RabbitMQ
    payloads and render emails in store-local time (Step 11, "Local-time
    conversion still to do").
-3. **Dockerfiles for the three apps and CI**, so CI has tests to run.
+4. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
+   e2e suite needs the four services, so CI would use the docker-compose
+   file (or service containers).
 
 Can wait: real email integration in `notification-worker`, Swagger docs,
 rate limiting, and the config cleanups listed under Step 10.
@@ -1152,7 +1294,7 @@ Missing before a real user could actually use it:
 
 Missing before it's production-ready even with the above filled in:
 
-- No tests (zero .spec.ts files in the repo)
+- Test coverage is unit tests for the slot/local-time/reservation-view logic plus the e2e suite (Step 13); still none for `@lib/config`, the notification-worker or the event-consumer
 - No CI/CD, no Dockerfiles for the three apps themselves (only their infra dependencies run in docker-compose)
 - No API docs (no Swagger/OpenAPI)
 - No rate limiting beyond DTO validation
