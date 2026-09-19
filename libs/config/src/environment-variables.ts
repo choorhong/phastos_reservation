@@ -1,9 +1,6 @@
-import { config as loadDotenv } from "dotenv";
-import { environmentSchema } from "./environment-schema";
-import type {
-  EnvironmentVariableName,
-  EnvironmentVariables,
-} from "./environment-schema";
+import { config as loadDotenv } from 'dotenv';
+import { environmentSchema } from './environment-schema';
+import type { EnvironmentVariableName, EnvironmentVariables } from './environment-schema';
 
 // Loaded here directly (not just via @nestjs/config's ConfigModule.forRoot())
 // so this file is correct regardless of Nest's module-import order -- this
@@ -14,30 +11,24 @@ loadDotenv();
 
 type ParsedValue = string | number | boolean | string[];
 
-const TRUE_VALUES = ["true", "1"];
-const FALSE_VALUES = ["false", "0"];
+const TRUE_VALUES = ['true', '1'];
+const FALSE_VALUES = ['false', '0'];
 
 /**
  * Turns a set (non-empty) raw string into its schema type. Throws for a
  * malformed value; returns `undefined` only for a list with no items, which
  * the caller treats the same as an unset variable.
  */
-function parse(
-  name: string,
-  type: string,
-  raw: string,
-): ParsedValue | undefined {
+function parse(name: string, type: string, raw: string): ParsedValue | undefined {
   switch (type) {
-    case "number": {
+    case 'number': {
       const value = Number(raw);
       if (Number.isNaN(value)) {
-        throw new Error(
-          `Invalid environment variable ${name}: expected a number, got "${raw}"`,
-        );
+        throw new Error(`Invalid environment variable ${name}: expected a number, got "${raw}"`);
       }
       return value;
     }
-    case "boolean": {
+    case 'boolean': {
       const normalised = raw.trim().toLowerCase();
       if (TRUE_VALUES.includes(normalised)) {
         return true;
@@ -49,9 +40,9 @@ function parse(
         `Invalid environment variable ${name}: expected true/false or 1/0, got "${raw}"`,
       );
     }
-    case "list": {
+    case 'list': {
       const items = raw
-        .split(",")
+        .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
       return items.length > 0 ? items : undefined;
@@ -67,13 +58,10 @@ function load(): EnvironmentVariables {
   const missing: string[] = [];
   const values: Record<string, ParsedValue | undefined> = {};
 
-  for (const name of Object.keys(
-    environmentSchema,
-  ) as EnvironmentVariableName[]) {
+  for (const name of Object.keys(environmentSchema) as EnvironmentVariableName[]) {
     const spec: { type: string; optional?: true } = environmentSchema[name];
     const raw = process.env[name];
-    const value =
-      raw === undefined || raw === "" ? undefined : parse(name, spec.type, raw);
+    const value = raw === undefined || raw === '' ? undefined : parse(name, spec.type, raw);
 
     if (value === undefined && !spec.optional) {
       missing.push(name);
@@ -82,9 +70,7 @@ function load(): EnvironmentVariables {
   }
 
   if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variable(s): ${missing.join(", ")}`,
-    );
+    throw new Error(`Missing required environment variable(s): ${missing.join(', ')}`);
   }
   return values as EnvironmentVariables;
 }

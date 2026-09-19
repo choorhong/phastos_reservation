@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after wiring HTTP reservation endpoints
+## Status: paused after moving all env config into a typed, no-defaults `@lib/config` (Step 10)
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -52,7 +52,8 @@ before resuming whether to make an initial commit.
     (`holdId` is `UNIQUE NOT NULL` — makes a retried Redis-confirm
     idempotent on the Postgres side; `status` is `held | confirmed |
 cancelled | expired`).
-  - `DatabaseModule` — `TypeOrmModule.forRootAsync` via `ConfigService`,
+  - `DatabaseModule` — `TypeOrmModule.forRootAsync` via `ConfigService`
+    (now `AppConfigService` — see Step 10),
     **`synchronize: false` always** (schema only moves through migrations,
     so the trigger below is never silently dropped by a sync).
   - `data-source.ts` — `DataSource` config for the TypeORM CLI.
@@ -692,6 +693,133 @@ FLUSHDB`).
   (`admin@phastos.local`, from `.env`'s `ADMIN_EMAIL`/`ADMIN_PASSWORD` --
   local dev credentials only, not meant to ship as-is).
 
+## Step 10 — Typed, no-defaults env config (`@lib/config`) ✅
+
+Commits `83905c3` (introduce the lib, migrate every consumer) and `5efc2eb`
+(single schema, drop defaults, add `list`/`boolean`).
+
+Before this, every env read was either `ConfigService.get('X', 'default')`
+or a raw `process.env.X ?? default`, with the defaults scattered across ~20
+files (and a silent `localhost`/`phastos`/`guest` fallback if a variable
+was forgotten). Now there is one place that declares, parses and validates
+every variable.
+
+- `libs/config` (`@lib/config`, registered in `nest-cli.json` and the root
+  `tsconfig.json` paths):
+  - `environment-schema.ts` — **the one place a variable is declared**:
+    its name, its parse type (`string | number | boolean | list`) and
+    whether it may be absent (`optional: true`). Everything else is
+    derived from it: the `EnvironmentVariables` type (so
+    `get('POSTGRES_PORT')` is `number`, `get('KAFKA_BROKERS')` is
+    `string[]`, only optional variables can be `undefined`), the
+    `EnvKey` name constants (`EnvKey.POSTGRES_HOST`), and the runtime
+    parsing. Adding a variable is one line.
+  - `environment-variables.ts` — calls `dotenv.config()` itself (see the
+    note below), then walks the schema over `process.env` **once at
+    import time** and exports `environmentVariables`.
+  - `app-config.service.ts` — `AppConfigService.get(key)` /
+    `getOrThrow(key)`, typed against the schema; a typo in the key is a
+    compile error.
+  - `app-config.module.ts` — `@Global()`, imported once by each
+    `AppModule`.
+- **No defaults, in any environment.** A missing or blank variable makes
+  startup throw one error listing every missing name
+  (`Missing required environment variable(s): A, B`) before Nest builds
+  any module. Only `ADMIN_EMAIL`, `ADMIN_PASSWORD` (unset = "skip admin
+  bootstrap") and `NODE_ENV` may be absent. A malformed number throws
+  `Invalid environment variable X: expected a number, got "..."`.
+- Parse types: `number` (`Number()`, rejects NaN), `boolean` (`true`/
+  `false`/`1`/`0`, case-insensitive; anything else throws rather than
+  guessing), `list` (comma-separated, items trimmed, empty items dropped;
+  a list with no items counts as missing). No current variable is a
+  boolean; the parser is there for the first feature flag.
+- `KAFKA_BROKERS` is now a `list`, so the two `.split(',')` calls in the
+  Kafka producer/consumer providers are gone.
+- Migrated to `AppConfigService`: all three `main.ts` (port), the
+  Redis/RabbitMQ/Kafka providers, auth module + admin bootstrap, hold
+  claim/reaper, notification consumers + reminder sweep, and
+  `DatabaseModule`. `libs/database/src/data-source.ts` (the TypeORM CLI
+  data source, which used to carry its own hardcoded defaults) now reads
+  `environmentVariables` too, so **`npm run typeorm -- migration:run`
+  needs the full variable set, not just the Postgres ones**.
+
+### Things worth knowing
+
+- **Every app requires every variable.** All three apps import the same
+  schema, so `event-consumer` will refuse to start without `RABBITMQ_*` or
+  `REMINDER_*` even though it never uses them (likewise `JWT_SECRET` and
+  the other apps' ports). Fine while the apps are deployed from one
+  `.env`; if they're ever deployed separately, split the schema per app.
+- **Read once, never re-read.** Changing `process.env` or `.env` while an
+  app runs has no effect until restart.
+- **`.env` vs real environment.** `dotenv` does not override variables
+  that are already set, so a real environment variable beats `.env`. A
+  `.env` left in a production working directory would also be picked up
+  and satisfy the check.
+- **`dotenv.config()` lives in the config lib on purpose.** The module's
+  top-level code can run before `ConfigModule.forRoot()` does (ES imports
+  resolve before the importing file's own statements), so relying on
+  `forRoot()` to load `.env` first would be order-dependent.
+- `ConfigModule.forRoot({ isGlobal: true })` is still in each `AppModule`.
+  It is now redundant (nothing reads `@nestjs/config`'s `ConfigService`
+  any more) and was left alone.
+- The one remaining raw `process.env` read outside the lib is `NODE_ENV`
+  in `libs/common/src/observability.module.ts`.
+- **`.prettierrc` added** (`singleQuote`, `trailingComma: "all"`,
+  `printWidth: 100`). There was none before, so prettier's defaults (double
+  quotes, 80 columns) — including the editor's format-on-save — kept
+  rewriting files away from the single-quoted style the repo was written
+  in. The three settings were picked by checking candidates against the
+  77 `.ts` files at `de516cc` (before any config work): this combination
+  matched 67 of them, the best of any width/trailing-comma combination
+  tried. `redis-client.provider.ts` and `environment-variables.ts`, which
+  the editor had switched to double quotes, were reformatted back. About
+  ten older files (e.g. `hold-reaper.service.ts`,
+  `notification-consumers.service.ts`, the first migration) still don't
+  match — they were hand-wrapped at other widths — and were left alone
+  rather than mixing a repo-wide reformat into this change. `npm run
+  format` will fix them whenever you want that as its own commit.
+
+### Verified (against the real containers; ad hoc scripts, not committed)
+
+- `tsc --noEmit` clean; all three apps build (`npm run build:all`) and boot;
+  `/health` returns `ok` on each.
+- Type-level assertions (throwaway file, deleted): `get('POSTGRES_PORT')` is
+  `number`, `get('KAFKA_BROKERS')` is `string[]`, `get('ADMIN_EMAIL')` is
+  not assignable to `string`, and a typo in `get(...)` / `EnvKey.X` does not
+  compile.
+- Parsing: real `.env` loads with correct types; a blank required variable,
+  two missing variables, `API_PORT=abc`, and `KAFKA_BROKERS=','` all throw
+  the expected error; a blank `ADMIN_EMAIL` is accepted; `list` cases
+  (`a:9092, b:9092`, stray commas) and ten `boolean` inputs (via a
+  temporary schema entry, reverted).
+- Fail-fast on the built bundles: blank `JWT_SECRET` stops all three apps;
+  blank `POSTGRES_PASSWORD` stops the api with exit code 1.
+- End-to-end, 19/19 checks over HTTP: admin login, wrong password (401), no
+  token (401), register, duplicate register (409), non-admin creating a
+  location (403), admin creating location/slot, browse (token required),
+  reserve → `held`, second user on a full slot (409), confirm → `confirmed`
+  (200 by design), cancel → `cancelled` (200 by design), slot bookable again.
+  `event-consumer` processed `ReservationRequested/Confirmed/Cancelled` and
+  `SlotReleased`; `notification-worker` delivered `confirmation-email` and
+  `receipt`.
+- Schedulers, with intervals set through real environment variables:
+  `REMINDER_SWEEP_INTERVAL_MS=5000` → `reminder.sweep.enqueued` for a
+  confirmed booking 30 minutes out; `HOLD_TTL_SECONDS=5` → the unconfirmed
+  hold was reaped. **Not proven:** the reaper logged `reapedBy:
+  "notification"` (the Redis keyspace fast path), so
+  `HOLD_REAPER_SWEEP_INTERVAL_MS` was read without error but the periodic
+  sweep itself wasn't observed firing.
+
+### Current environment state (as of pausing)
+
+- All containers unchanged, still running/healthy. No app processes left
+  running.
+- **Unlike earlier steps, test data was not cleaned up**: the dev database
+  still has several `Verify HQ` / `Full Check HQ` / `Sched HQ` locations with
+  their slots and reservations, plus `verify…`, `full…` and `sched…`
+  `@example.com` users. The admin user is still there as usual.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -782,6 +910,15 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    interceptor/pipe that takes constructor dependencies and gets shared
    across modules this way.
 
+7. **`TimeoutNegativeWarning` on every start of `api` and `event-consumer`.**
+   `(node) TimeoutNegativeWarning: -17898... is a negative number.
+   Timeout duration was set to 1.` — it comes from inside `kafkajs@2.2.4`
+   (`RequestQueue.scheduleCheckPendingRequests`, `requestQueue/index.js:317`,
+   found with `node --trace-warnings`), not from our config or code. The
+   value is the negative epoch time, i.e. a timer computed against an unset
+   value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
+   use Kafka show it. Not fixed.
+
 ## Next step: real notifications / event-consumer, or GET /reservations/:id
 
 All four infrastructure legs, the reservation lifecycle HTTP endpoints
@@ -797,8 +934,10 @@ reservation. What's left before this is a real system:
   `confirm`/`cancel` (Step 9).
 - `JWT_SECRET`/`ADMIN_PASSWORD` in `.env`/`.env.example` are local-dev
   placeholders (`dev-secret-change-me` / `phastos-admin`) — must be
-  overridden with real secrets outside local dev; nothing enforces that
-  today.
+  overridden with real secrets outside local dev. Since Step 10 the app
+  refuses to start if `JWT_SECRET` (or any other required variable) is
+  missing, but it cannot tell a placeholder from a real secret, so a
+  copied-over placeholder value still passes.
 
 Solid and verified end-to-end:
 
