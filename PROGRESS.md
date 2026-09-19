@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after generating slots by rule and returning local times on `GET /slots` (Step 11)
+## Status: paused after `GET /reservations`, reservation responses with local times, and the `@lib/time` lib (Step 12)
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -856,7 +856,7 @@ slot** — is turned into real `slots` rows for today plus the next 30 days.
 - **Local times on `GET /slots`**: each slot now also carries `timezone`,
   `localDate` (`2026-09-21`), `localStartTime` and `localEndTime` (`10:00`,
   `12:00`), computed on the way out from the UTC instants plus the
-  location's timezone (`slot-local-time.ts`, luxon) — **not stored**, since
+  location's timezone (`@lib/time`, luxon; it lived in `apps/api` until Step 12) — **not stored**, since
   they're derived and would drift if a timezone were corrected. The UTC
   `startTime`/`endTime` are unchanged. Clients still get the raw instants
   for exact maths, but no longer need their own timezone logic to show the
@@ -886,23 +886,15 @@ slot** — is turned into real `slots` rows for today plus the next 30 days.
 - Existing slots created by hand that are off the new grid stay as they are;
   they're just ordinary rows.
 
-### Local-time conversion still to do (reservations & notifications)
+### Local-time conversion still to do (notifications)
 
-Only `GET /slots` converts to the location's timezone so far. The rule is
-the same everywhere: **store and pass around UTC instants, convert to the
-location's timezone (`locations.timezone`) only when a person will read the
-value** — and always with an explicit timezone, never the machine's or the
-viewer's default (a Singapore Monday 10:00 slot is Sunday 7pm for a viewer
-in California). Places that still need it:
+The rule is the same everywhere: **store and pass around UTC instants,
+convert to the location's timezone (`locations.timezone`) only when a person
+will read the value** — and always with an explicit timezone, never the
+machine's or the viewer's default (a Singapore Monday 10:00 slot is Sunday
+7pm for a viewer in California). `GET /slots` (this step) and the
+reservation endpoints (Step 12) now do this. Still to do:
 
-- **Reservation API responses** (`POST /reservations`, `/confirm`, `/cancel`
-  in `reservations.service.ts`) return the bare `Reservation` entity: a
-  `slotId` and no slot times or location at all, so a client can't show
-  "your booking is Mon 10:00 AM" without a second call. Include the slot's
-  UTC times plus the local fields (`timezone`, `localDate`,
-  `localStartTime`, `localEndTime`) and the location name.
-- **`GET /reservations`** (the "my bookings" list, still to be built) needs
-  the same fields, and should group/sort by the location's local date.
 - **RabbitMQ payloads** (`libs/rabbitmq-contracts/src/notification-messages.ts`):
   `ConfirmationEmailPayload` (`slotStartTime`, `slotEndTime`) and
   `ReminderPayload` (`slotStartTime`) carry ISO UTC and `locationName` but
@@ -910,11 +902,12 @@ in California). Places that still need it:
   location's `timezone` (or the precomputed local fields) to both. The
   reminder sweep (`reminder-sweep.service.ts`) already loads
   `slot.location`, so the timezone is on hand there; the confirm path in
-  `reservations.service.ts` has the slot and needs the location loaded.
+  `reservations.service.ts` now loads the location too.
 - **Real email rendering** (`notification-worker`, not built — consumers
   only log today): render the time in the location's timezone with the
-  zone named ("Mon 21 Sep, 10:00 AM–12:00 PM SGT"). Users have no timezone
-  of their own, so store-local time is the right default; a second line in
+  zone named ("Mon 21 Sep, 10:00 AM–12:00 PM SGT"), using `@lib/time`
+  (importable from `notification-worker` now). Users have no timezone of
+  their own, so store-local time is the right default; a second line in
   the viewer's zone would need a user timezone first.
 - **Kafka events** (`libs/kafka-contracts`, `ReservationConfirmedPayload`):
   `slotStartTime`/`slotEndTime` as ISO UTC is right for machine consumers,
@@ -922,12 +915,6 @@ in California). Places that still need it:
   the envelope; adding `timezone` to the payload is cheap if that happens.
 - **Not affected:** the reminder window (`REMINDER_LEAD_MINUTES`) and hold
   expiry compare absolute instants, so they are correct in any timezone.
-- **Where the helper lives.** `toSlotLocalTimes`/`localDayRange` are in
-  `apps/api/src/modules/slots/slot-local-time.ts`, which
-  `notification-worker` can't import (apps don't import each other).
-  Before the email work, move them to a lib (e.g. a new `@lib/time`, or
-  `@lib/domain` if it may take a `luxon` dependency), with the spec
-  alongside. `luxon` is already a root dependency.
 
 ### Verified (against the real containers; ad hoc curl, plus jest)
 
@@ -952,6 +939,64 @@ in California). Places that still need it:
   locations with their slots and reservations. The dev database now has **no
   locations or slots** (create a location and its slots are generated at
   once). The admin user and the `@example.com` test users are still there.
+
+## Step 12 — `GET /reservations`, reservation responses with local times, `@lib/time` ✅
+
+### What changed
+
+- **New lib `@lib/time`** (`libs/time`, registered in the root `tsconfig.json`
+  paths and `nest-cli.json` like the other libs): `toSlotLocalTimes` and
+  `localDayRange`, moved out of `apps/api/src/modules/slots` (history kept
+  with `git mv`) so `notification-worker` can use them too. Its spec moved
+  with it.
+- **`ReservationView`** (`reservation-view.ts`): what every reservation
+  endpoint now returns instead of the bare entity — `id`, `status`, `userId`,
+  `slotId`, `createdAt`, `confirmedAt`/`cancelledAt`/`cancelReason` (`null`
+  when unset), `slot` (`id`, UTC `startTime`/`endTime`, plus `timezone`,
+  `localDate`, `localStartTime`, `localEndTime`) and `location` (`id`,
+  `name`, `address`). **Behaviour change:** `holdId`, `correlationId`,
+  `reminderSentAt` and `updatedAt` are no longer in responses (internal),
+  and `confirm` no longer leaks the nested raw `slot.location` entity.
+- **`GET /reservations`**: the caller's own bookings, soonest slot first,
+  optional `?status=held|confirmed|cancelled|expired` (else 400). Admins get
+  their own here too — it is "my bookings", not "all bookings".
+- **`GET /reservations/:id`**: same ownership rule as confirm/cancel (owner
+  or admin → 200, someone else → 403, unknown → 404).
+- `POST /reservations`, `/confirm` and `/cancel` return the same view
+  (`requestHold` now loads the slot's location; `cancel` loads
+  `slot.location`).
+- **Tests**: `reservation-view.spec.ts` (local times per location, nulls,
+  internal fields hidden) and `reservations.service.spec.ts` (ownership and
+  filter rules of the two reads, with mocked repository) — 30 jest tests in
+  all.
+
+### Things worth knowing
+
+- Nothing filters out past reservations; a client that wants "upcoming" only
+  has to compare `slot.startTime` itself (or we add a query param later).
+- Group a list by `slot.localDate` (the location's date), not by the
+  viewer's local date, or Singapore's Monday slots land under Sunday for a
+  viewer in California.
+- The service spec is a unit test with a mocked repository; the real
+  end-to-end flow test is still the top item under "Next step".
+
+### Verified (against the real containers; ad hoc curl, plus jest)
+
+- As one user: booked Orchard (Tue 22 Sep 10:00 SGT = 02:00Z) and Santa
+  Monica (12:00 PDT = 19:00Z); `create`, `confirm`, `cancel` all returned
+  the view with the correct local time and timezone for each location.
+- `GET /reservations` listed both soonest-first; `?status=confirmed` and
+  `?status=cancelled` filtered correctly; `?status=bogus` → 400; a second
+  user's list was `[]`.
+- `GET /reservations/:id`: owner 200, other user 403, admin 200, unknown 404,
+  no token 401. The create response's keys had no `holdId`/`correlationId`.
+- No errors in the api log.
+
+### Current environment state (as of pausing)
+
+- Containers unchanged and healthy; api stopped. Test users and reservations
+  from this step were deleted. Dev database: Orchard and Santa Monica (84
+  slots each), the admin, and the older `@example.com` test users.
 
 ## Gotchas hit and fixed along the way
 
@@ -1052,7 +1097,7 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: real notifications / event-consumer, or GET /reservations/:id
+## Next step: end-to-end tests, then real notifications
 
 **Suggested order:**
 
@@ -1061,15 +1106,13 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    end-to-end test of the reservation flow that has so far only been
    checked by ad hoc scripts (auth incl. the 401/403 paths, hold, confirm,
    cancel, full slot), run against the docker-compose containers.
-2. **`GET /reservations`** for a user's own bookings.
+2. **Real notifications:** add the location's timezone to the RabbitMQ
+   payloads and render emails in store-local time (Step 11, "Local-time
+   conversion still to do").
 3. **Dockerfiles for the three apps and CI**, so CI has tests to run.
 
 Can wait: real email integration in `notification-worker`, Swagger docs,
 rate limiting, and the config cleanups listed under Step 10.
-
-Whichever of these is picked up next, do the local-time work listed under
-Step 11 ("Local-time conversion still to do") with it: `GET /reservations`
-and the email payloads both need the location's timezone.
 
 All four infrastructure legs, the reservation lifecycle HTTP endpoints
 (Step 6), the full locations/slots admin+browse surface (Step 7 create,
@@ -1078,10 +1121,8 @@ verified end-to-end. No payment step is planned — this is a free
 appointment-booking system (Apple Genius Bar-style), not a paid
 reservation. What's left before this is a real system:
 
-- No `GET /reservations/:id` (or list) endpoint yet — add if/when a
-  client needs to poll a single reservation's status or a user needs to
-  see their own bookings. Would need the same ownership check pattern as
-  `confirm`/`cancel` (Step 9).
+- `GET /reservations` and `GET /reservations/:id` exist since Step 12, so a
+  client can poll one reservation's status and a user can list their own.
 - `JWT_SECRET`/`ADMIN_PASSWORD` in `.env`/`.env.example` are local-dev
   placeholders (`dev-secret-change-me` / `phastos-admin`) — must be
   overridden with real secrets outside local dev. Since Step 10 the app
