@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { config } from 'dotenv';
 import { DataSource } from 'typeorm';
-import { Location, ProcessedEvent, Reservation, Slot } from './entities';
+import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
 
 config();
 
@@ -17,7 +17,7 @@ export const AppDataSource = new DataSource({
   username: process.env.POSTGRES_USER ?? 'phastos',
   password: process.env.POSTGRES_PASSWORD ?? 'phastos',
   database: process.env.POSTGRES_DB ?? 'phastos_reservation',
-  entities: [Location, Slot, Reservation, ProcessedEvent],
+  entities: [Location, Slot, Reservation, ProcessedEvent, User],
   migrations: [__dirname + '/../migrations/*.{ts,js}'],
   synchronize: false,
 });

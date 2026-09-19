@@ -1,0 +1,14 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { Location } from '@lib/database';
+import { AuthModule } from '@app/api/modules/auth/auth.module';
+import { LocationsController } from './locations.controller';
+import { LocationsService } from './locations.service';
+
+@Module({
+  imports: [AuthModule, TypeOrmModule.forFeature([Location])],
+  controllers: [LocationsController],
+  providers: [LocationsService],
+  exports: [LocationsService],
+})
+export class LocationsModule {}

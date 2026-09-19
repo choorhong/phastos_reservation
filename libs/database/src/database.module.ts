@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Location, ProcessedEvent, Reservation, Slot } from './entities';
+import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
 
 /**
  * Postgres is the source of truth (PLAN.md §1/§5). `synchronize: false`
@@ -22,11 +22,11 @@ import { Location, ProcessedEvent, Reservation, Slot } from './entities';
         username: config.get<string>('POSTGRES_USER', 'phastos'),
         password: config.get<string>('POSTGRES_PASSWORD', 'phastos'),
         database: config.get<string>('POSTGRES_DB', 'phastos_reservation'),
-        entities: [Location, Slot, Reservation, ProcessedEvent],
+        entities: [Location, Slot, Reservation, ProcessedEvent, User],
         synchronize: false,
       }),
     }),
-    TypeOrmModule.forFeature([Location, Slot, Reservation, ProcessedEvent]),
+    TypeOrmModule.forFeature([Location, Slot, Reservation, ProcessedEvent, User]),
   ],
   exports: [TypeOrmModule],
 })

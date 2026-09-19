@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Reservation, Slot } from '@lib/database';
+import { AuthModule } from '@app/api/modules/auth/auth.module';
 import { EventsModule } from '@app/api/modules/events/events.module';
 import { NotificationsModule } from '@app/api/modules/notifications/notifications.module';
 import { SlotsModule } from '@app/api/modules/slots/slots.module';
@@ -9,6 +10,7 @@ import { ReservationsService } from './reservations.service';
 
 @Module({
   imports: [
+    AuthModule,
     SlotsModule,
     EventsModule,
     NotificationsModule,

@@ -1,9 +1,10 @@
-import { ConflictException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClsService } from 'nestjs-cls';
 import { Logger } from 'nestjs-pino';
 import { Repository } from 'typeorm';
 import { Reservation, Slot } from '@lib/database';
+import { AuthenticatedUser } from '@app/api/modules/auth/auth.types';
 import { EventsPublisherService } from '@app/api/modules/events/events-publisher.service';
 import { NotificationsPublisherService } from '@app/api/modules/notifications/notifications-publisher.service';
 import { HoldExpiredError, SlotSoldOutError } from '@app/api/modules/slots/slot-hold.errors';
@@ -31,7 +32,7 @@ export class ReservationsService {
     private readonly logger: Logger,
   ) {}
 
-  async requestHold(dto: CreateReservationDto): Promise<Reservation> {
+  async requestHold(dto: CreateReservationDto, userId: string): Promise<Reservation> {
     const correlationId = this.cls.getId();
 
     const slot = await this.slots.findOne({ where: { id: dto.slotId } });
@@ -41,7 +42,7 @@ export class ReservationsService {
 
     let hold;
     try {
-      hold = await this.slotHoldService.claim(dto.slotId, dto.userId);
+      hold = await this.slotHoldService.claim(dto.slotId, userId);
     } catch (err) {
       if (err instanceof SlotSoldOutError) {
         throw new ConflictException(err.message);
@@ -52,7 +53,7 @@ export class ReservationsService {
     const reservation = await this.reservations.save(
       this.reservations.create({
         slotId: slot.id,
-        userId: dto.userId,
+        userId,
         holdId: hold.holdId,
         status: 'held',
         correlationId,
@@ -76,7 +77,7 @@ export class ReservationsService {
     return reservation;
   }
 
-  async confirm(reservationId: string): Promise<Reservation> {
+  async confirm(reservationId: string, currentUser: AuthenticatedUser): Promise<Reservation> {
     const correlationId = this.cls.getId();
 
     const reservation = await this.reservations.findOne({
@@ -86,6 +87,7 @@ export class ReservationsService {
     if (!reservation) {
       throw new NotFoundException(`Reservation ${reservationId} not found`);
     }
+    this.assertOwnerOrAdmin(reservation, currentUser);
     if (reservation.status === 'confirmed') {
       return reservation;
     }
@@ -149,7 +151,7 @@ export class ReservationsService {
     return reservation;
   }
 
-  async cancel(reservationId: string, dto: CancelReservationDto): Promise<Reservation> {
+  async cancel(reservationId: string, dto: CancelReservationDto, currentUser: AuthenticatedUser): Promise<Reservation> {
     const correlationId = this.cls.getId();
 
     const reservation = await this.reservations.findOne({
@@ -159,6 +161,7 @@ export class ReservationsService {
     if (!reservation) {
       throw new NotFoundException(`Reservation ${reservationId} not found`);
     }
+    this.assertOwnerOrAdmin(reservation, currentUser);
     if (reservation.status === 'cancelled') {
       return reservation;
     }
@@ -201,5 +204,12 @@ export class ReservationsService {
     }
 
     return reservation;
+  }
+
+  /** Admins can act on any reservation; a regular user only on their own. */
+  private assertOwnerOrAdmin(reservation: Reservation, currentUser: AuthenticatedUser): void {
+    if (currentUser.role !== 'admin' && reservation.userId !== currentUser.userId) {
+      throw new ForbiddenException(`Reservation ${reservation.id} does not belong to this user`);
+    }
   }
 }

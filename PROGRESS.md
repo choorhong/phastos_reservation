@@ -51,14 +51,14 @@ before resuming whether to make an initial commit.
   - Entities: `Location`, `Slot` (`capacity: int`), `Reservation`
     (`holdId` is `UNIQUE NOT NULL` — makes a retried Redis-confirm
     idempotent on the Postgres side; `status` is `held | confirmed |
-    cancelled | expired`).
+cancelled | expired`).
   - `DatabaseModule` — `TypeOrmModule.forRootAsync` via `ConfigService`,
     **`synchronize: false` always** (schema only moves through migrations,
     so the trigger below is never silently dropped by a sync).
   - `data-source.ts` — `DataSource` config for the TypeORM CLI.
   - `libs/database/migrations/1789211003000-InitialSchema.ts` — creates all
     three tables, plus **`enforce_slot_capacity`**: a `BEFORE INSERT OR
-    UPDATE OF status` trigger on `reservations` that row-locks the slot
+UPDATE OF status` trigger on `reservations` that row-locks the slot
     (`SELECT ... FOR UPDATE`) and refuses to let a row become `confirmed`
     if that would exceed the slot's `capacity`. This is the DB-level
     defense-in-depth from `PLAN.md` §2 — it holds even if Redis is
@@ -310,7 +310,7 @@ All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
     startup, same "whichever comes up first wins" pattern as
     `assertNotificationsTopology`.
   - `publishReservationEvent(producer, eventType, {slotId, locationId,
-    correlationId, payload})` -- envelopes + sends, keyed by `slotId` so a
+correlationId, payload})` -- envelopes + sends, keyed by `slotId` so a
     slot's events land in one partition and stay ordered. Shared so the
     envelope shape can't drift between producers.
 - `apps/api/src/modules/kafka/` -- `KAFKA_PRODUCER` provider: connects,
@@ -328,7 +328,7 @@ All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
   once (same scope boundary as the notification handlers -- logs, no real
   downstream integration yet). Claims each event with a raw
   `INSERT INTO processed_events ... ON CONFLICT DO NOTHING RETURNING
-  event_id` *before* "processing" it; an empty `RETURNING` result means a
+event_id` _before_ "processing" it; an empty `RETURNING` result means a
   duplicate delivery, logged and skipped.
 - `AppModule` (api, event-consumer): wired in `KafkaModule`/`EventsModule`,
   and (`event-consumer` only) `DatabaseModule` for the `processed_events`
@@ -349,7 +349,7 @@ running:
   the dedupe check used TypeORM's query-builder `.insert().orIgnore()` and
   checked `result.identifiers.length`. Since `ProcessedEvent`'s primary key
   columns aren't DB-generated, TypeORM populates `identifiers` from the
-  *input* values regardless of whether Postgres actually inserted the row
+  _input_ values regardless of whether Postgres actually inserted the row
   or discarded it via `ON CONFLICT DO NOTHING` -- so a redelivered event
   with the same `eventId` was logged as freshly processed a second time,
   even though Postgres correctly kept only one `processed_events` row.
@@ -472,7 +472,7 @@ processed_events`).
 - All four containers (`phastos-postgres`, `phastos-redis`,
   `phastos-rabbitmq`, `phastos-kafka` + `phastos-kafka-ui`) running,
   healthy — brought back up this session after a prior pause (`docker
-  compose up -d`; data persisted in the named volumes).
+compose up -d`; data persisted in the named volumes).
 - No `api`/`notification-worker`/`event-consumer` processes left running.
 - No payment step, by design — this is a free appointment-booking system
   (Apple Genius Bar-style), not a paid reservation, so there's nothing to
@@ -484,6 +484,213 @@ processed_events`).
 - No `GET /reservations/:id` (or any read/list endpoint) yet — out of
   scope for this step, which was specifically "wire the write/lifecycle
   endpoints"; add one if a client needs to poll reservation status.
+
+## Step 7 — Admin endpoints for locations/slots ✅
+
+- `apps/api/src/modules/locations/` — new module: `POST /locations`
+  (`name`, `address`, `timezone` — `timezone` validated with
+  class-validator's `@IsTimeZone()`, an IANA-zone check, catching typos
+  like `Not/AZone` at the DTO layer instead of surfacing a confusing
+  downstream error the first time something formats a date with it).
+  `LocationsService` is a thin save-and-return over the `Location` repo.
+- `apps/api/src/modules/slots/` (existing module, previously only the
+  Redis hold lifecycle) — added `SlotAdminService` + `SlotsController`:
+  `POST /slots` (`locationId`, `startTime`, `endTime` as ISO date
+  strings, `capacity` as a positive int). Validates the location exists
+  (404 if not) and `endTime > startTime` (400 if not) before inserting.
+  Kept as a separate service/file from `SlotHoldService` (admin CRUD vs.
+  claim/confirm/release are different concerns) but the same module,
+  since both own the `Slot` entity in `apps/api`. Added `Location` to
+  the module's `TypeOrmModule.forFeature`.
+- Deliberately does **not** touch Redis on slot creation — availability
+  is lazily seeded into `slot:{slotId}:available` from Postgres on the
+  first claim (`SlotHoldService.claim`'s `SLOT_NOT_LOADED` path, Step 3),
+  so a freshly admin-created slot is immediately bookable with no extra
+  wiring. Verified explicitly (see below).
+- `AppModule`: added `LocationsModule`.
+- No `GET` endpoints yet (listing/browsing locations or slots) — out of
+  scope for this step, which was specifically the admin *create* paths.
+  Still no auth — these endpoints are as open as the reservation ones.
+
+### Verified (ad hoc curl against real containers)
+
+Built and ran `api` (`node dist/apps/api/main.js`) against the existing
+Postgres/Redis containers:
+
+- `POST /locations` with a valid body → `201`, full row back with
+  generated `id`.
+- `POST /locations` with `timezone: "Not/AZone"` → `400`
+  (`@IsTimeZone()` rejects it before it ever reaches Postgres).
+- `POST /slots` referencing that location, `capacity: 2` → `201`.
+- `POST /slots` with an unknown `locationId` → `404`.
+- `POST /slots` with `endTime` before `startTime` → `400`.
+- `POST /reservations` against the newly created slot (no manual Redis
+  seeding) → `201`, `status: held` — confirms the lazy Postgres→Redis
+  load path picks up admin-created slots with no extra step.
+
+All test rows/keys cleaned up afterward (`DELETE` on the seeded
+location/slot/reservation rows, `redis-cli FLUSHDB`).
+
+### Current environment state (as of pausing)
+
+- All containers unchanged, still running/healthy.
+- No `api` process left running.
+
+## Step 8 — GET endpoints for locations/slots ✅
+
+- `apps/api/src/modules/locations/`: `GET /locations` — lists all
+  locations, ordered by `name`. No pagination/filtering (small,
+  admin-managed set; add if it ever grows past that).
+- `apps/api/src/modules/slots/`: `GET /slots?locationId=&from=&to=` —
+  `ListSlotsDto` (all three params optional; `locationId` UUID,
+  `from`/`to` ISO date strings). `from` defaults to now (past slots
+  aren't bookable, so don't return them by default); `to` is an open
+  upper bound if omitted.
+  - `SlotAdminService.findMany` — queries `slots` with the
+    locationId/startTime filters via the repository's `.find()` (not
+    raw QueryBuilder, matching this codebase's existing style — see
+    `reminder-sweep.service.ts`), then a second `.find()` for `held`/
+    `confirmed` reservations on the matched slot ids, grouped in JS into
+    a `Map<slotId, count>`. Each returned slot gets an `available:
+    capacity - bookedCount` field.
+  - Deliberately reads availability from Postgres, not Redis
+    (`slot:{slotId}:available`): this is a browse path, not the booking
+    hot path, so it favors the always-consistent source of truth over
+    `SlotHoldService`'s cache, and avoids adding a Redis round-trip per
+    browsed slot.
+  - `available` counts `held` reservations as consumed capacity too
+    (not just `confirmed`) since an in-flight hold really is occupying
+    that spot from another user's perspective — matches how the Redis
+    counter and the Postgres capacity trigger both treat it elsewhere in
+    the system.
+
+### Verified (ad hoc curl against real containers)
+
+Built and ran `api` against the existing containers:
+
+- `GET /locations` on an empty table → `[]`; after creating two
+  locations → both returned, alphabetically by name.
+- Seeded one past slot + two future slots at location A, one future slot
+  at location B. `GET /slots` (no filters) → only the 3 future slots,
+  past one excluded, each with `available` equal to its `capacity`
+  (nothing booked yet).
+- `GET /slots?locationId=<A>` → only location A's 2 future slots.
+- Booked the capacity-1 slot at location A (`POST /reservations`) →
+  re-ran `GET /slots?locationId=<A>` → that slot's `available` dropped
+  to `0`, the other slot's `available` unchanged.
+- `GET /slots?locationId=not-a-uuid` → `400` (DTO validation on a query
+  param, not just body).
+
+All test rows/keys cleaned up afterward (`DELETE` on seeded
+location/slot/reservation rows, `redis-cli FLUSHDB`).
+
+### Current environment state (as of pausing)
+
+- All containers unchanged, still running/healthy.
+- No `api` process left running.
+
+## Step 9 — Auth/authz (JWT, two roles) ✅
+
+Decisions locked in with the user before building: **JWT bearer tokens**
+(not sessions/API keys) and **two roles, `user`/`admin`** (not a single
+"authenticated" tier) — admins manage locations/slots, users own their
+own reservations.
+
+- `libs/domain`: added `UserRole = 'user' | 'admin'`.
+- `libs/database`: new `User` entity (`email` unique, `password_hash`,
+  `role`) + migration `AddUsers1789798628495` (`role` also `CHECK`-
+  constrained in Postgres, not just application code). Wired into
+  `data-source.ts` and `DatabaseModule` alongside the other four
+  entities.
+- New deps: `@nestjs/jwt`, `bcryptjs` (+ `@types/bcryptjs`) — picked
+  `bcryptjs` over `bcrypt` to avoid a native addon in the webpack-bundled
+  build (this repo already hit one webpack/native-asset gotcha with the
+  Lua scripts in Step 1 — see Gotchas #2 — no interest in a second one
+  with a compiled `.node` file).
+- `apps/api/src/modules/auth/` — new module:
+  - `POST /auth/register` (email + password ≥8 chars, hashed with
+    bcryptjs) always creates `role: 'user'` — no self-service path to
+    `admin`, so nobody can grant themselves admin through the public API.
+  - `POST /auth/login` — verifies password, returns a signed JWT
+    (`{ sub: userId, role }`, `JWT_SECRET`/`JWT_EXPIRES_IN` from env).
+  - `AdminBootstrapService` (`OnModuleInit`) — idempotently seeds one
+    `role: 'admin'` user from `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars on
+    boot if neither is empty and no user with that email exists yet.
+    This is the only way an admin account gets created; credentials live
+    in `.env` (gitignored), never in a migration or any committed file.
+  - `JwtAuthGuard` — reads `Authorization: Bearer <token>`, verifies it,
+    populates `request.user: { userId, role }`; 401 on anything missing/
+    invalid/expired.
+  - `RolesGuard` + `@Roles('admin')` decorator — must run after
+    `JwtAuthGuard` (reads `request.user`, doesn't populate it); a route
+    with no `@Roles()` metadata is open to any authenticated role.
+  - `@CurrentUser()` param decorator — pulls `request.user` for handlers.
+  - `AuthModule` is `@Global()`, and exports `JwtModule` itself
+    alongside `JwtAuthGuard`/`RolesGuard` — **not** just the two guard
+    classes. Hit this the hard way (see Gotchas #6): exporting only the
+    guards and having feature modules `imports: [AuthModule]` was not
+    enough for `@UseGuards(JwtAuthGuard)` to resolve in those modules;
+    `JwtAuthGuard`'s own `JwtService` dependency has to be reachable
+    through the same export/global chain, not just the guard class
+    itself.
+- Applied guards per controller:
+  - `LocationsController`, `SlotsController`: class-level
+    `@UseGuards(JwtAuthGuard)` (any authenticated role can `GET`), plus
+    `@UseGuards(RolesGuard) @Roles('admin')` stacked on the `POST` method
+    only (class-level and method-level `@UseGuards()` both run, in that
+    order).
+  - `ReservationsController`: class-level `@UseGuards(JwtAuthGuard)` on
+    all three routes. `CreateReservationDto` no longer takes `userId` at
+    all -- `ReservationsService.requestHold` now takes it as an explicit
+    param sourced from `@CurrentUser()`, closing the "anyone can book as
+    anyone" gap by construction rather than by validation.
+  - `ReservationsService.confirm`/`cancel` now take the caller's
+    `AuthenticatedUser` and call a new `assertOwnerOrAdmin` check right
+    after the 404 lookup, before any status logic runs (so a non-owner
+    gets a flat 403 with no information about the reservation's state,
+    rather than a 200/409 that would leak it): `role === 'admin'` bypasses
+    the check entirely, otherwise `reservation.userId` must equal the
+    caller's `userId`.
+- `.env.example`/`.env`: added `JWT_SECRET`, `JWT_EXPIRES_IN`,
+  `ADMIN_EMAIL`, `ADMIN_PASSWORD`.
+
+### Verified (ad hoc curl against real containers)
+
+Built and ran `api` against the existing containers:
+
+- `GET /locations` with no token → `401`.
+- Logged in as the env-bootstrapped admin (confirmed
+  `auth.admin_bootstrapped` in the boot log on first boot after the
+  migration).
+- `POST /auth/register` (alice) → `201` + token; registering the same
+  email again → `409`; login with the wrong password → `401`.
+- Alice (role `user`) attempting `POST /locations` → `403`.
+- Admin created a location + slot → `201`/`201`; alice's token worked
+  for `GET /locations` and `GET /slots` → `200`/`200` (both roles allowed
+  on `GET`).
+- Alice booked the slot with no `userId` in the request body at all —
+  the returned reservation's `userId` matched her JWT's `sub`.
+- Registered bob; bob attempting to confirm alice's reservation → `403`.
+- Alice confirming her own reservation → `200`. Admin then cancelling
+  that same (not-their-own) reservation → `200` (admin override works).
+- A garbage bearer token → `401`.
+- Rebuilt `notification-worker` and `event-consumer` too (both import
+  `@lib/database`/`@lib/domain`, both touched by this step) to confirm
+  the new `User` entity/`UserRole` type didn't break either -- both
+  compiled clean.
+
+All test rows cleaned up afterward (`DELETE` on seeded location/slot/
+reservation rows and the alice/bob users -- admin user deliberately left
+in place since it's meant to persist across restarts, `redis-cli
+FLUSHDB`).
+
+### Current environment state (as of pausing)
+
+- All containers unchanged, still running/healthy.
+- No `api` process left running.
+- One `role: admin` user persists in Postgres
+  (`admin@phastos.local`, from `.env`'s `ADMIN_EMAIL`/`ADMIN_PASSWORD` --
+  local dev credentials only, not meant to ship as-is).
 
 ## Gotchas hit and fixed along the way
 
@@ -503,7 +710,7 @@ processed_events`).
    imports** (e.g. opening `apps/api/src/app.module.ts`, which imports
    `@app/common`/`@app/database`) — none of `tsconfig.app.json`/
    `tsconfig.lib.json` ever set `rootDir` explicitly, leaving it to be
-   *inferred* from whichever files end up in the compiled program. Plain
+   _inferred_ from whichever files end up in the compiled program. Plain
    `tsc` and `nest build` (webpack) both infer it correctly (common
    ancestor of every file actually pulled in via `@app/*` path mapping =
    the repo root) — verified by direct emit, output correctly
@@ -520,7 +727,7 @@ processed_events`).
    full rootDir-relative path" behavior from gotcha #1 only ever applies
    to a bypassed, non-webpack `tsc -p ... ` emit, which nothing here uses.
 4. **`@/*` retired in favor of `@app/<app>/*`.** The original convention
-   (commit `dad167b`) used the *same* alias name `@/*` in every app,
+   (commit `dad167b`) used the _same_ alias name `@/*` in every app,
    scoped to that app's own `tsconfig.app.json` (`@/foo` meant "this
    app's own src", identically worded in every app). That meant the
    `@app/*` lib aliases had to be fully re-declared alongside `@/*` in
@@ -554,19 +761,68 @@ processed_events`).
    checks as gotcha #4 (`tsc --noEmit` on all 9 projects, `nest build` on
    all 3 apps, real boot + `/health` on all 3 apps against live containers)
    plus one this rename specifically touches: `npm run typeorm --
-   migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
+migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    path-resolution mechanism from webpack) still resolves `@lib/domain`
    correctly through `data-source.ts`'s entities.
 
-## Next step: auth/authz (not started)
+6. **`@UseGuards(SomeGuard)` referencing a guard class exported from
+   another module doesn't just work off `exports: [SomeGuard]`.** Adding
+   `AuthModule` (providing/exporting `JwtAuthGuard`) to `LocationsModule`'s
+   `imports` and marking `AuthModule` `@Global()` still failed at boot
+   with `Nest can't resolve dependencies of the JwtAuthGuard (?) ...
+   available in the LocationsModule context` -- `JwtAuthGuard`'s own
+   constructor dependency (`JwtService`, from `JwtModule`, imported but
+   not re-exported by `AuthModule`) wasn't reachable via that export
+   chain even though the guard class itself was. Fixed by also exporting
+   `JwtModule` itself from `AuthModule` (`exports: [JwtModule,
+   JwtAuthGuard, RolesGuard]`) -- a guard referenced by class in
+   `@UseGuards()` apparently needs its *entire* dependency chain visible
+   through exports/globals from the consuming module's perspective, not
+   just the guard token. Worth remembering for any future guard/
+   interceptor/pipe that takes constructor dependencies and gets shared
+   across modules this way.
 
-All four infrastructure legs and the reservation lifecycle HTTP endpoints
-(Step 6) are built and verified end-to-end. No payment step is planned —
-this is a free appointment-booking system (Apple Genius Bar-style), not a
-paid reservation. What's left before this is a real system:
+## Next step: real notifications / event-consumer, or GET /reservations/:id
 
-- **Auth/authz**: every endpoint currently trusts a client-supplied
-  `userId` with no verification — there's no auth layer at all yet. Fine
-  for continued local iteration, not fine beyond that.
-- No read/list endpoints (`GET /reservations/:id`, `GET /slots?...` for
-  browsing availability) — add if/when a client needs them.
+All four infrastructure legs, the reservation lifecycle HTTP endpoints
+(Step 6), the full locations/slots admin+browse surface (Step 7 create,
+Step 8 list), and JWT auth/authz with two roles (Step 9) are built and
+verified end-to-end. No payment step is planned — this is a free
+appointment-booking system (Apple Genius Bar-style), not a paid
+reservation. What's left before this is a real system:
+
+- No `GET /reservations/:id` (or list) endpoint yet — add if/when a
+  client needs to poll a single reservation's status or a user needs to
+  see their own bookings. Would need the same ownership check pattern as
+  `confirm`/`cancel` (Step 9).
+- `JWT_SECRET`/`ADMIN_PASSWORD` in `.env`/`.env.example` are local-dev
+  placeholders (`dev-secret-change-me` / `phastos-admin`) — must be
+  overridden with real secrets outside local dev; nothing enforces that
+  today.
+
+Solid and verified end-to-end:
+
+- Slot-hold concurrency (Redis atomic claim/confirm/release, no double-booking even under a thundering herd)
+- Postgres capacity trigger as a hard backstop if Redis is ever bypassed/stale
+- Kafka lifecycle events, RabbitMQ notification queues with retry/DLQ, reminder sweep
+- The three reservation endpoints (POST /reservations, /confirm, /cancel) tying it all together, now identity-checked against the caller's JWT rather than a client-supplied userId
+- Locations/slots admin+browse endpoints (POST/GET /locations, POST/GET /slots) — a freshly created slot is immediately bookable with no manual Redis seeding, and GET /slots reports live availability computed against Postgres
+- JWT auth with two roles (user/admin): register/login, admin-only location/slot creation, and reservation ownership enforced (a user can only confirm/cancel their own booking; admin can act on any)
+
+Missing before a real user could actually use it:
+
+- A user can now discover bookable slots end-to-end through the API
+  (`GET /locations` → `GET /slots?locationId=...` → `POST /reservations`)
+  — the "can't discover a slot ID" gap from Step 6/7 is closed.
+- Auth now exists end-to-end (Step 9) — the "anyone can book/cancel as
+  anyone" gap is closed for reservations, and locations/slots creation is
+  admin-gated.
+- Notifications aren't real. notification-worker validates the payload and logs notification.delivered — there's no actual SendGrid/SES/email integration, so "confirmation email" and "reminder" don't send anything today.
+- event-consumer is a stub too — it dedupes and logs, but there's no real analytics/audit/inventory-sync behind it.
+
+Missing before it's production-ready even with the above filled in:
+
+- No tests (zero .spec.ts files in the repo)
+- No CI/CD, no Dockerfiles for the three apps themselves (only their infra dependencies run in docker-compose)
+- No API docs (no Swagger/OpenAPI)
+- No rate limiting beyond DTO validation
