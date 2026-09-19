@@ -11,7 +11,7 @@ export const kafkaConsumerProvider: Provider = {
   useFactory: async (config: AppConfigService): Promise<Consumer> => {
     const kafka = new Kafka({
       clientId: config.get('KAFKA_CLIENT_ID'),
-      brokers: config.get('KAFKA_BROKERS').split(','),
+      brokers: config.get('KAFKA_BROKERS'),
     });
 
     const admin = kafka.admin();

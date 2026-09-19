@@ -1,18 +1,18 @@
-import { Provider } from '@nestjs/common';
-import Redis from 'ioredis';
-import { AppConfigService } from '@lib/config';
-import { attachHoldScripts } from '@lib/redis-scripts';
+import { Provider } from "@nestjs/common";
+import Redis from "ioredis";
+import { AppConfigService } from "@lib/config";
+import { attachHoldScripts } from "@lib/redis-scripts";
 
-export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
-export const REDIS_SUBSCRIBER_CLIENT = Symbol('REDIS_SUBSCRIBER_CLIENT');
+export const REDIS_CLIENT = Symbol("REDIS_CLIENT");
+export const REDIS_SUBSCRIBER_CLIENT = Symbol("REDIS_SUBSCRIBER_CLIENT");
 
 export const redisClientProvider: Provider = {
   provide: REDIS_CLIENT,
   inject: [AppConfigService],
   useFactory: (config: AppConfigService): Redis => {
     const redis = new Redis({
-      host: config.get('REDIS_HOST'),
-      port: config.get('REDIS_PORT'),
+      host: config.get("REDIS_HOST"),
+      port: config.get("REDIS_PORT"),
     });
     return attachHoldScripts(redis);
   },
@@ -29,7 +29,7 @@ export const redisSubscriberClientProvider: Provider = {
   inject: [AppConfigService],
   useFactory: (config: AppConfigService): Redis =>
     new Redis({
-      host: config.get('REDIS_HOST'),
-      port: config.get('REDIS_PORT'),
+      host: config.get("REDIS_HOST"),
+      port: config.get("REDIS_PORT"),
     }),
 };

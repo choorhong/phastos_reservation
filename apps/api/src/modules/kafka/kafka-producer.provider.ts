@@ -11,7 +11,7 @@ export const kafkaProducerProvider: Provider = {
   useFactory: async (config: AppConfigService): Promise<Producer> => {
     const kafka = new Kafka({
       clientId: config.get('KAFKA_CLIENT_ID'),
-      brokers: config.get('KAFKA_BROKERS').split(','),
+      brokers: config.get('KAFKA_BROKERS'),
     });
 
     // Whichever process (api or event-consumer) boots first creates the

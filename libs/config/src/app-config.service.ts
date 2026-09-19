@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { environmentVariables } from './environment-variables';
-import type { EnvironmentVariables } from './environment-variables.type';
+import type { EnvironmentVariables } from './environment-schema';
 
 /**
  * Same shape of API as `@nestjs/config`'s `ConfigService` (`get`/
