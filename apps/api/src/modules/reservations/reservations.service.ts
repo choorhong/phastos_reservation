@@ -17,6 +17,8 @@ import { HoldExpiredError, SlotSoldOutError } from '@app/api/modules/slots/slot-
 import { SlotHoldService } from '@app/api/modules/slots/slot-hold.service';
 import { CancelReservationDto } from './dto/cancel-reservation.dto';
 import { CreateReservationDto } from './dto/create-reservation.dto';
+import { ListReservationsDto } from './dto/list-reservations.dto';
+import { ReservationView, toReservationView } from './reservation-view';
 
 /**
  * Ties the four independently-verified infrastructure legs (Redis hold,
@@ -38,10 +40,13 @@ export class ReservationsService {
     private readonly logger: Logger,
   ) {}
 
-  async requestHold(dto: CreateReservationDto, userId: string): Promise<Reservation> {
+  async requestHold(dto: CreateReservationDto, userId: string): Promise<ReservationView> {
     const correlationId = this.cls.getId();
 
-    const slot = await this.slots.findOne({ where: { id: dto.slotId } });
+    const slot = await this.slots.findOne({
+      where: { id: dto.slotId },
+      relations: ['location'],
+    });
     if (!slot) {
       throw new NotFoundException(`Slot ${dto.slotId} not found`);
     }
@@ -83,10 +88,33 @@ export class ReservationsService {
       );
     }
 
-    return reservation;
+    reservation.slot = slot;
+    return toReservationView(reservation);
   }
 
-  async confirm(reservationId: string, currentUser: AuthenticatedUser): Promise<Reservation> {
+  /** The caller's own reservations, soonest slot first. Admins see only their own here too. */
+  async listForUser(userId: string, query: ListReservationsDto): Promise<ReservationView[]> {
+    const reservations = await this.reservations.find({
+      where: { userId, ...(query.status && { status: query.status }) },
+      relations: ['slot', 'slot.location'],
+      order: { slot: { startTime: 'ASC' } },
+    });
+    return reservations.map(toReservationView);
+  }
+
+  async findOne(reservationId: string, currentUser: AuthenticatedUser): Promise<ReservationView> {
+    const reservation = await this.reservations.findOne({
+      where: { id: reservationId },
+      relations: ['slot', 'slot.location'],
+    });
+    if (!reservation) {
+      throw new NotFoundException(`Reservation ${reservationId} not found`);
+    }
+    this.assertOwnerOrAdmin(reservation, currentUser);
+    return toReservationView(reservation);
+  }
+
+  async confirm(reservationId: string, currentUser: AuthenticatedUser): Promise<ReservationView> {
     const correlationId = this.cls.getId();
 
     const reservation = await this.reservations.findOne({
@@ -98,7 +126,7 @@ export class ReservationsService {
     }
     this.assertOwnerOrAdmin(reservation, currentUser);
     if (reservation.status === 'confirmed') {
-      return reservation;
+      return toReservationView(reservation);
     }
     if (reservation.status !== 'held') {
       throw new ConflictException(
@@ -159,26 +187,26 @@ export class ReservationsService {
       this.logger.warn({ err, reservationId }, 'reservation.confirm_notifications_publish_failed');
     }
 
-    return reservation;
+    return toReservationView(reservation);
   }
 
   async cancel(
     reservationId: string,
     dto: CancelReservationDto,
     currentUser: AuthenticatedUser,
-  ): Promise<Reservation> {
+  ): Promise<ReservationView> {
     const correlationId = this.cls.getId();
 
     const reservation = await this.reservations.findOne({
       where: { id: reservationId },
-      relations: ['slot'],
+      relations: ['slot', 'slot.location'],
     });
     if (!reservation) {
       throw new NotFoundException(`Reservation ${reservationId} not found`);
     }
     this.assertOwnerOrAdmin(reservation, currentUser);
     if (reservation.status === 'cancelled') {
-      return reservation;
+      return toReservationView(reservation);
     }
     if (reservation.status !== 'held' && reservation.status !== 'confirmed') {
       throw new ConflictException(
@@ -220,7 +248,7 @@ export class ReservationsService {
       this.logger.warn({ err, reservationId }, 'reservation.cancelled_event_publish_failed');
     }
 
-    return reservation;
+    return toReservationView(reservation);
   }
 
   /** Admins can act on any reservation; a regular user only on their own. */

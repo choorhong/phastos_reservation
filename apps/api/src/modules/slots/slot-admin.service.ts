@@ -20,9 +20,9 @@ import {
 import { AppConfigService } from '@lib/config';
 import { Location, Reservation, Slot } from '@lib/database';
 import { slotKeys } from '@lib/redis-scripts';
+import { localDayRange, SlotLocalTimes, toSlotLocalTimes } from '@lib/time';
 import { REDIS_CLIENT } from '@app/api/modules/redis/redis-client.provider';
 import { ListSlotsDto } from './dto/list-slots.dto';
-import { localDayRange, SlotLocalTimes, toSlotLocalTimes } from './slot-local-time';
 
 export interface SlotWithAvailability extends Slot, SlotLocalTimes {
   available: number;

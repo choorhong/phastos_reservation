@@ -99,6 +99,15 @@
       "compilerOptions": {
         "tsConfigPath": "libs/config/tsconfig.lib.json"
       }
+    },
+    "time": {
+      "type": "library",
+      "root": "libs/time",
+      "entryFile": "index",
+      "sourceRoot": "libs/time/src",
+      "compilerOptions": {
+        "tsConfigPath": "libs/time/tsconfig.lib.json"
+      }
     }
   }
 }

@@ -34,6 +34,8 @@
       "@lib/common/*": ["./libs/common/src/*"],
       "@lib/config": ["./libs/config/src"],
       "@lib/config/*": ["./libs/config/src/*"],
+      "@lib/time": ["./libs/time/src"],
+      "@lib/time/*": ["./libs/time/src/*"],
       "@app/api/*": ["./apps/api/src/*"],
       "@app/notification-worker/*": ["./apps/notification-worker/src/*"],
       "@app/event-consumer/*": ["./apps/event-consumer/src/*"]
