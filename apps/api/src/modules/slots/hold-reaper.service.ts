@@ -1,9 +1,13 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
+import { InjectRepository } from '@nestjs/typeorm';
 import { Logger } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
+import { Repository } from 'typeorm';
 import { AppConfigService } from '@lib/config';
+import { Reservation } from '@lib/database';
 import { ACTIVE_SLOTS_KEY } from '@lib/redis-scripts';
+import { EventsPublisherService } from '@app/api/modules/events/events-publisher.service';
 import {
   REDIS_CLIENT,
   REDIS_SUBSCRIBER_CLIENT,
@@ -26,6 +30,14 @@ const SWEEP_INTERVAL_NAME = 'slot-hold-reaper-sweep';
  *    and reaps those too. Catches notifications missed across a Redis
  *    restart/failover window.
  *
+ * Returning the spot in Redis is only half of it: the reservation row in
+ * Postgres is also moved from `held` to `expired` (reason `hold_expired`),
+ * and `ReservationCancelled` + `SlotReleased` events are published with that
+ * reason. Without this an abandoned hold would stay `held` forever, quietly
+ * lowering the availability `GET /slots` reports (it counts `held` rows).
+ * The update is conditional on the row still being `held`, so a confirm or
+ * cancel that got there first wins and nothing is published twice.
+ *
  * `releaseHold` is safe to call twice for the same holdId: after the first
  * call the holdId is gone from `pending`, so a second sweep/notification
  * racing on the same expiry won't find it and won't double-increment
@@ -39,6 +51,8 @@ export class HoldReaperService implements OnModuleInit, OnModuleDestroy {
     private readonly config: AppConfigService,
     private readonly scheduler: SchedulerRegistry,
     private readonly logger: Logger,
+    @InjectRepository(Reservation) private readonly reservations: Repository<Reservation>,
+    private readonly events: EventsPublisherService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -97,5 +111,45 @@ export class HoldReaperService implements OnModuleInit, OnModuleDestroy {
     const pendingKey = `slot:{${slotId}}:pending`;
     await this.redis.releaseHold(availableKey, holdKey, pendingKey, holdId);
     this.logger.log({ slotId, holdId, reapedBy }, 'slot.hold.expired_reaped');
+    await this.expireReservation(slotId, holdId);
+  }
+
+  private async expireReservation(slotId: string, holdId: string): Promise<void> {
+    try {
+      const reservation = await this.reservations.findOne({
+        where: { holdId },
+        relations: ['slot'],
+      });
+      if (!reservation) {
+        return;
+      }
+      const expired = await this.reservations.update(
+        { id: reservation.id, status: 'held' },
+        { status: 'expired', cancelReason: 'hold_expired' },
+      );
+      if (expired.affected !== 1) {
+        return; // confirmed, cancelled or already expired in the meantime
+      }
+
+      const ctx = {
+        slotId,
+        locationId: reservation.slot.locationId,
+        correlationId: reservation.correlationId ?? holdId,
+      };
+      await this.events.publishReservationCancelled(ctx, {
+        reservationId: reservation.id,
+        userId: reservation.userId,
+        cancelledAt: new Date().toISOString(),
+        reason: 'hold_expired',
+      });
+      await this.events.publishSlotReleased(ctx, {
+        slotId,
+        releasedCapacity: 1,
+        reason: 'hold_expired',
+      });
+    } catch (err) {
+      // The spot is already back in Redis; a failure here must not stop the reaper.
+      this.logger.error({ err, slotId, holdId }, 'slot.hold.expire_reservation_failed');
+    }
   }
 }

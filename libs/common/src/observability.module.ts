@@ -39,6 +39,8 @@ function extractCorrelationId(req: IncomingMessage): string {
     }),
     LoggerModule.forRoot({
       pinoHttp: {
+        // Jest sets NODE_ENV=test; keep test output readable.
+        level: process.env.NODE_ENV === 'test' ? 'silent' : 'info',
         genReqId: (req: IncomingMessage) => extractCorrelationId(req),
         customProps: (req: IncomingMessage & { id?: string }) => ({
           correlationId: req.id,

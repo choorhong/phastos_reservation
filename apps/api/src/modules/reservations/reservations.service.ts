@@ -8,7 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClsService } from 'nestjs-cls';
 import { Logger } from 'nestjs-pino';
-import { Repository } from 'typeorm';
+import { QueryFailedError, Repository } from 'typeorm';
 import { Reservation, Slot } from '@lib/database';
 import { AuthenticatedUser } from '@app/api/modules/auth/auth.types';
 import { EventsPublisherService } from '@app/api/modules/events/events-publisher.service';
@@ -128,6 +128,10 @@ export class ReservationsService {
     if (reservation.status === 'confirmed') {
       return toReservationView(reservation);
     }
+    if (reservation.status === 'expired') {
+      // The reaper already expired the hold: same answer as a late confirm always got.
+      throw new GoneException(`Hold for reservation ${reservationId} has expired`);
+    }
     if (reservation.status !== 'held') {
       throw new ConflictException(
         `Reservation ${reservationId} is ${reservation.status}, cannot confirm`,
@@ -139,6 +143,7 @@ export class ReservationsService {
     } catch (err) {
       if (err instanceof HoldExpiredError) {
         reservation.status = 'expired';
+        reservation.cancelReason = 'hold_expired';
         await this.reservations.save(reservation);
         throw new GoneException(err.message);
       }
@@ -147,7 +152,11 @@ export class ReservationsService {
 
     reservation.status = 'confirmed';
     reservation.confirmedAt = new Date();
-    await this.reservations.save(reservation);
+    try {
+      await this.reservations.save(reservation);
+    } catch (err) {
+      throw await this.rejectConfirmIfSlotFull(err, reservation);
+    }
 
     const slot = reservation.slot;
     const eventCtx = { slotId: slot.id, locationId: slot.locationId, correlationId };
@@ -249,6 +258,30 @@ export class ReservationsService {
     }
 
     return toReservationView(reservation);
+  }
+
+  /**
+   * Redis said there was room but Postgres's `enforce_slot_capacity` trigger
+   * disagrees (Redis was stale or lost): Postgres wins. The reservation can
+   * never be confirmed, so it is cancelled instead of being left `held`
+   * (nothing would ever clean it up: its Redis hold is already consumed), and
+   * the caller gets a 409 rather than a bare 500. Any other error is passed on.
+   */
+  private async rejectConfirmIfSlotFull(err: unknown, reservation: Reservation): Promise<unknown> {
+    if (!(err instanceof QueryFailedError) || !err.message.includes('SLOT_CAPACITY_EXCEEDED')) {
+      return err;
+    }
+    // A targeted update: the in-memory entity still carries the confirmedAt
+    // set above, which must not reach the row.
+    await this.reservations.update(
+      { id: reservation.id },
+      { status: 'cancelled', cancelledAt: new Date() },
+    );
+    this.logger.warn(
+      { reservationId: reservation.id, slotId: reservation.slotId },
+      'reservation.confirm_rejected_slot_full',
+    );
+    return new ConflictException(`Slot ${reservation.slotId} is already full`);
   }
 
   /** Admins can act on any reservation; a regular user only on their own. */
