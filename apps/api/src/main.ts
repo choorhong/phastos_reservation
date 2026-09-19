@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { Logger } from 'nestjs-pino';
+import { AppConfigService } from '@lib/config';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -8,7 +9,7 @@ async function bootstrap() {
   app.useLogger(app.get(Logger));
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
-  const port = process.env.API_PORT ?? 3000;
+  const port = app.get(AppConfigService).get('API_PORT');
   await app.listen(port);
 }
 

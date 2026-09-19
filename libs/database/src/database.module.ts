@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AppConfigModule, AppConfigService } from '@lib/config';
 import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
 
 /**
@@ -13,15 +13,15 @@ import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
+      imports: [AppConfigModule],
+      inject: [AppConfigService],
+      useFactory: (config: AppConfigService) => ({
         type: 'postgres',
-        host: config.get<string>('POSTGRES_HOST', 'localhost'),
-        port: config.get<number>('POSTGRES_PORT', 5432),
-        username: config.get<string>('POSTGRES_USER', 'phastos'),
-        password: config.get<string>('POSTGRES_PASSWORD', 'phastos'),
-        database: config.get<string>('POSTGRES_DB', 'phastos_reservation'),
+        host: config.get('POSTGRES_HOST'),
+        port: config.get('POSTGRES_PORT'),
+        username: config.get('POSTGRES_USER'),
+        password: config.get('POSTGRES_PASSWORD'),
+        database: config.get('POSTGRES_DB'),
         entities: [Location, Slot, Reservation, ProcessedEvent, User],
         synchronize: false,
       }),

@@ -1,8 +1,7 @@
 import { Global, Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions, JwtSignOptions } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { EnvironmentVariables } from '@lib/config';
+import { AppConfigModule, AppConfigService } from '@lib/config';
 import { User } from '@lib/database';
 import { AdminBootstrapService } from './admin-bootstrap.service';
 import { AuthController } from './auth.controller';
@@ -22,11 +21,11 @@ import { RolesGuard } from './roles.guard';
   imports: [
     TypeOrmModule.forFeature([User]),
     JwtModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService<EnvironmentVariables, true>): JwtModuleOptions => ({
-        secret: config.getOrThrow<string>('JWT_SECRET'),
-        signOptions: { expiresIn: config.get<string>('JWT_EXPIRES_IN', '1h') as JwtSignOptions['expiresIn'] },
+      imports: [AppConfigModule],
+      inject: [AppConfigService],
+      useFactory: (config: AppConfigService): JwtModuleOptions => ({
+        secret: config.get('JWT_SECRET'),
+        signOptions: { expiresIn: config.get('JWT_EXPIRES_IN') as JwtSignOptions['expiresIn'] },
       }),
     }),
   ],

@@ -1,6 +1,6 @@
 import { Provider } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { AppConfigService } from '@lib/config';
 import { attachHoldScripts } from '@lib/redis-scripts';
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
@@ -8,11 +8,11 @@ export const REDIS_SUBSCRIBER_CLIENT = Symbol('REDIS_SUBSCRIBER_CLIENT');
 
 export const redisClientProvider: Provider = {
   provide: REDIS_CLIENT,
-  inject: [ConfigService],
-  useFactory: (config: ConfigService): Redis => {
+  inject: [AppConfigService],
+  useFactory: (config: AppConfigService): Redis => {
     const redis = new Redis({
-      host: config.get<string>('REDIS_HOST', 'localhost'),
-      port: config.get<number>('REDIS_PORT', 6379),
+      host: config.get('REDIS_HOST'),
+      port: config.get('REDIS_PORT'),
     });
     return attachHoldScripts(redis);
   },
@@ -26,10 +26,10 @@ export const redisClientProvider: Provider = {
  */
 export const redisSubscriberClientProvider: Provider = {
   provide: REDIS_SUBSCRIBER_CLIENT,
-  inject: [ConfigService],
-  useFactory: (config: ConfigService): Redis =>
+  inject: [AppConfigService],
+  useFactory: (config: AppConfigService): Redis =>
     new Redis({
-      host: config.get<string>('REDIS_HOST', 'localhost'),
-      port: config.get<number>('REDIS_PORT', 6379),
+      host: config.get('REDIS_HOST'),
+      port: config.get('REDIS_PORT'),
     }),
 };

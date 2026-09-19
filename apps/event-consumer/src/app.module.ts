@@ -1,6 +1,7 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ObservabilityModule } from '@lib/common';
+import { AppConfigModule } from '@lib/config';
 import { DatabaseModule } from '@lib/database';
 import { EventsModule } from './modules/events/events.module';
 
@@ -16,6 +17,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ObservabilityModule,
+    AppConfigModule,
     DatabaseModule,
     EventsModule,
   ],

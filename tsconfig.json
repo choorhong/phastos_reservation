@@ -32,6 +32,8 @@
       "@lib/rabbitmq-contracts/*": ["./libs/rabbitmq-contracts/src/*"],
       "@lib/common": ["./libs/common/src"],
       "@lib/common/*": ["./libs/common/src/*"],
+      "@lib/config": ["./libs/config/src"],
+      "@lib/config/*": ["./libs/config/src/*"],
       "@app/api/*": ["./apps/api/src/*"],
       "@app/notification-worker/*": ["./apps/notification-worker/src/*"],
       "@app/event-consumer/*": ["./apps/event-consumer/src/*"]

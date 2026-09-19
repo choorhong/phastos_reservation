@@ -1,11 +1,11 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { Logger } from 'nestjs-pino';
 import { randomUUID } from 'crypto';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 import { Between, IsNull, Repository } from 'typeorm';
+import { AppConfigService } from '@lib/config';
 import { Reservation } from '@lib/database';
 import { publishNotification } from '@lib/rabbitmq-contracts';
 import { RABBITMQ_CHANNEL } from '@app/notification-worker/modules/rabbitmq/rabbitmq-connection.provider';
@@ -34,15 +34,15 @@ export class ReminderSweepService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @InjectRepository(Reservation) private readonly reservations: Repository<Reservation>,
     @Inject(RABBITMQ_CHANNEL) private readonly channel: ChannelWrapper,
-    private readonly config: ConfigService,
+    private readonly config: AppConfigService,
     private readonly scheduler: SchedulerRegistry,
     private readonly logger: Logger,
   ) {
-    this.reminderLeadMinutes = this.config.get<number>('REMINDER_LEAD_MINUTES', 60);
+    this.reminderLeadMinutes = this.config.get('REMINDER_LEAD_MINUTES');
   }
 
   onModuleInit(): void {
-    const sweepIntervalMs = this.config.get<number>('REMINDER_SWEEP_INTERVAL_MS', 60_000);
+    const sweepIntervalMs = this.config.get('REMINDER_SWEEP_INTERVAL_MS');
     const handle = setInterval(() => void this.sweep(), sweepIntervalMs);
     this.scheduler.addInterval(SWEEP_INTERVAL_NAME, handle);
   }

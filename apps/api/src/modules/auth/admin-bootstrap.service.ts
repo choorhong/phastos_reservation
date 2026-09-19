@@ -1,10 +1,9 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Logger } from 'nestjs-pino';
 import * as bcrypt from 'bcryptjs';
 import { Repository } from 'typeorm';
-import { EnvironmentVariables } from '@lib/config';
+import { AppConfigService } from '@lib/config';
 import { User } from '@lib/database';
 
 const BCRYPT_ROUNDS = 10;
@@ -22,13 +21,13 @@ const BCRYPT_ROUNDS = 10;
 export class AdminBootstrapService implements OnModuleInit {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
-    private readonly config: ConfigService<EnvironmentVariables, true>,
+    private readonly config: AppConfigService,
     private readonly logger: Logger,
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const email = this.config.get<string>('ADMIN_EMAIL');
-    const password = this.config.get<string>('ADMIN_PASSWORD');
+    const email = this.config.get('ADMIN_EMAIL');
+    const password = this.config.get('ADMIN_PASSWORD');
     if (!email || !password) {
       return;
     }

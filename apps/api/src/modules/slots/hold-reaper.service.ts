@@ -1,8 +1,8 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { Logger } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
+import { AppConfigService } from '@lib/config';
 import { ACTIVE_SLOTS_KEY } from '@lib/redis-scripts';
 import { REDIS_CLIENT, REDIS_SUBSCRIBER_CLIENT } from '@app/api/modules/redis/redis-client.provider';
 
@@ -33,7 +33,7 @@ export class HoldReaperService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @Inject(REDIS_SUBSCRIBER_CLIENT) private readonly subscriber: Redis,
-    private readonly config: ConfigService,
+    private readonly config: AppConfigService,
     private readonly scheduler: SchedulerRegistry,
     private readonly logger: Logger,
   ) {}
@@ -44,7 +44,7 @@ export class HoldReaperService implements OnModuleInit, OnModuleDestroy {
       void this.reapExpiredKey(expiredKey);
     });
 
-    const sweepIntervalMs = this.config.get<number>('HOLD_REAPER_SWEEP_INTERVAL_MS', 30_000);
+    const sweepIntervalMs = this.config.get('HOLD_REAPER_SWEEP_INTERVAL_MS');
     const handle = setInterval(() => void this.sweep(), sweepIntervalMs);
     this.scheduler.addInterval(SWEEP_INTERVAL_NAME, handle);
   }

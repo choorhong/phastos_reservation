@@ -1,8 +1,8 @@
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Logger } from 'nestjs-pino';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 import type { ConsumeMessage } from 'amqplib';
+import { AppConfigService } from '@lib/config';
 import {
   NOTIFICATION_QUEUE_NAMES,
   NOTIFICATIONS_EXCHANGE,
@@ -30,10 +30,10 @@ export class NotificationConsumersService implements OnModuleInit {
 
   constructor(
     @Inject(RABBITMQ_CHANNEL) private readonly channel: ChannelWrapper,
-    private readonly config: ConfigService,
+    private readonly config: AppConfigService,
     private readonly logger: Logger,
   ) {
-    this.maxRetries = this.config.get<number>('NOTIFICATION_MAX_RETRIES', 3);
+    this.maxRetries = this.config.get('NOTIFICATION_MAX_RETRIES');
   }
 
   async onModuleInit(): Promise<void> {

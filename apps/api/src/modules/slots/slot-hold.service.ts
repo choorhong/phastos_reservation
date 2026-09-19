@@ -1,10 +1,10 @@
 import { randomUUID } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Logger } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
 import { Repository } from 'typeorm';
+import { AppConfigService } from '@lib/config';
 import { ACTIVE_SLOTS_KEY, slotKeys } from '@lib/redis-scripts';
 import { Reservation, Slot } from '@lib/database';
 import { REDIS_CLIENT } from '@app/api/modules/redis/redis-client.provider';
@@ -33,10 +33,10 @@ export class SlotHoldService {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @InjectRepository(Slot) private readonly slots: Repository<Slot>,
     @InjectRepository(Reservation) private readonly reservations: Repository<Reservation>,
-    private readonly config: ConfigService,
+    private readonly config: AppConfigService,
     private readonly logger: Logger,
   ) {
-    this.holdTtlSeconds = this.config.get<number>('HOLD_TTL_SECONDS', 300);
+    this.holdTtlSeconds = this.config.get('HOLD_TTL_SECONDS');
   }
 
   async claim(slotId: string, userId: string): Promise<SlotHold> {

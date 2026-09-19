@@ -1,7 +1,7 @@
 import { Provider } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import * as amqp from 'amqp-connection-manager';
 import type { AmqpConnectionManager, ChannelWrapper } from 'amqp-connection-manager';
+import { AppConfigService } from '@lib/config';
 import { assertNotificationsTopology } from '@lib/rabbitmq-contracts';
 
 export const RABBITMQ_CONNECTION = Symbol('RABBITMQ_CONNECTION');
@@ -9,12 +9,12 @@ export const RABBITMQ_CHANNEL = Symbol('RABBITMQ_CHANNEL');
 
 export const rabbitmqConnectionProvider: Provider = {
   provide: RABBITMQ_CONNECTION,
-  inject: [ConfigService],
-  useFactory: (config: ConfigService): AmqpConnectionManager => {
-    const host = config.get<string>('RABBITMQ_HOST', 'localhost');
-    const port = config.get<number>('RABBITMQ_PORT', 5672);
-    const user = config.get<string>('RABBITMQ_USER', 'guest');
-    const password = config.get<string>('RABBITMQ_PASSWORD', 'guest');
+  inject: [AppConfigService],
+  useFactory: (config: AppConfigService): AmqpConnectionManager => {
+    const host = config.get('RABBITMQ_HOST');
+    const port = config.get('RABBITMQ_PORT');
+    const user = config.get('RABBITMQ_USER');
+    const password = config.get('RABBITMQ_PASSWORD');
     return amqp.connect([`amqp://${user}:${password}@${host}:${port}`]);
   },
 };

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ObservabilityModule } from '@lib/common';
+import { AppConfigModule } from '@lib/config';
 import { DatabaseModule } from '@lib/database';
 import { AuthModule } from './modules/auth/auth.module';
 import { EventsModule } from './modules/events/events.module';
@@ -16,6 +17,7 @@ import { SlotsModule } from './modules/slots/slots.module';
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
     ObservabilityModule,
+    AppConfigModule,
     DatabaseModule,
     AuthModule,
     LocationsModule,
