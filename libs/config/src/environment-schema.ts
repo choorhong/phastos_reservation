@@ -51,6 +51,16 @@ export const environmentSchema = {
   REMINDER_LEAD_MINUTES: { type: 'number' },
   REMINDER_SWEEP_INTERVAL_MS: { type: 'number' },
 
+  // Slot generation (apps/api/src/modules/slots): the one global rule slots
+  // are generated from. Hours are wall-clock in each location's own timezone;
+  // slots are created for weekdays only.
+  SLOT_OPEN_HOUR: { type: 'number' },
+  SLOT_CLOSE_HOUR: { type: 'number' },
+  SLOT_DURATION_HOURS: { type: 'number' },
+  SLOT_CAPACITY: { type: 'number' },
+  SLOT_WINDOW_DAYS: { type: 'number' },
+  SLOT_GENERATION_INTERVAL_MS: { type: 'number' },
+
   // Kafka
   KAFKA_BROKERS: { type: 'list' },
   KAFKA_CLIENT_ID: { type: 'string' },

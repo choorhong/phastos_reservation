@@ -19,9 +19,12 @@ import { Reservation } from './reservation.entity';
  * `slot:{slotId}:available` counter is seeded from at cache-load time
  * (PLAN.md §2). Postgres is the source of truth for this value; Redis is a
  * cache of it plus in-flight holds.
+ *
+ * `(locationId, startTime)` is UNIQUE so the slot generator can re-run
+ * safely (`INSERT ... ON CONFLICT DO NOTHING`).
  */
 @Entity('slots')
-@Index(['locationId', 'startTime'])
+@Index('uq_slots_location_start', ['locationId', 'startTime'], { unique: true })
 export class Slot {
   @PrimaryGeneratedColumn('uuid')
   id: string;
