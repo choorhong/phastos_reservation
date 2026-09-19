@@ -36,7 +36,9 @@ export class InitialSchema1789211003000 implements MigrationInterface {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
-    await queryRunner.query(`CREATE INDEX idx_slots_location_start ON slots(location_id, start_time);`);
+    await queryRunner.query(
+      `CREATE INDEX idx_slots_location_start ON slots(location_id, start_time);`,
+    );
 
     await queryRunner.query(`
       CREATE TABLE reservations (
@@ -53,7 +55,9 @@ export class InitialSchema1789211003000 implements MigrationInterface {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
-    await queryRunner.query(`CREATE INDEX idx_reservations_slot_status ON reservations(slot_id, status);`);
+    await queryRunner.query(
+      `CREATE INDEX idx_reservations_slot_status ON reservations(slot_id, status);`,
+    );
 
     await queryRunner.query(`
       CREATE OR REPLACE FUNCTION enforce_slot_capacity() RETURNS TRIGGER AS $$

@@ -4,7 +4,10 @@ import { Logger } from 'nestjs-pino';
 import type { Redis } from 'ioredis';
 import { AppConfigService } from '@lib/config';
 import { ACTIVE_SLOTS_KEY } from '@lib/redis-scripts';
-import { REDIS_CLIENT, REDIS_SUBSCRIBER_CLIENT } from '@app/api/modules/redis/redis-client.provider';
+import {
+  REDIS_CLIENT,
+  REDIS_SUBSCRIBER_CLIENT,
+} from '@app/api/modules/redis/redis-client.provider';
 
 const EXPIRED_HOLD_PATTERN = /^hold:\{([^}]+)\}:(.+)$/;
 const SWEEP_INTERVAL_NAME = 'slot-hold-reaper-sweep';

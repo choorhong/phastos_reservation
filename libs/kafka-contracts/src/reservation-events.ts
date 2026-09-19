@@ -12,10 +12,7 @@ import type { Admin, Producer } from 'kafkajs';
  */
 
 export type ReservationEventType =
-  | 'ReservationRequested'
-  | 'ReservationConfirmed'
-  | 'ReservationCancelled'
-  | 'SlotReleased';
+  'ReservationRequested' | 'ReservationConfirmed' | 'ReservationCancelled' | 'SlotReleased';
 
 export interface EventEnvelope<T extends ReservationEventType, P> {
   eventId: string; // UUID v4 -- dedupe key for idempotent consumers, generated once at publish time

@@ -86,7 +86,12 @@ export class NotificationConsumersService implements OnModuleInit {
     });
     this.channel.ack(msg); // original delivery is replaced by the republished retry, above
     this.logger.warn(
-      { queue, retryCount: retryCount + 1, error: err.message, messageId: msg.properties.messageId },
+      {
+        queue,
+        retryCount: retryCount + 1,
+        error: err.message,
+        messageId: msg.properties.messageId,
+      },
       'notification.retry_scheduled',
     );
   }

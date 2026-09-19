@@ -1,4 +1,10 @@
-import { ConflictException, ForbiddenException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  GoneException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClsService } from 'nestjs-cls';
 import { Logger } from 'nestjs-pino';
@@ -71,7 +77,10 @@ export class ReservationsService {
         },
       );
     } catch (err) {
-      this.logger.warn({ err, reservationId: reservation.id }, 'reservation.requested_event_publish_failed');
+      this.logger.warn(
+        { err, reservationId: reservation.id },
+        'reservation.requested_event_publish_failed',
+      );
     }
 
     return reservation;
@@ -92,7 +101,9 @@ export class ReservationsService {
       return reservation;
     }
     if (reservation.status !== 'held') {
-      throw new ConflictException(`Reservation ${reservationId} is ${reservation.status}, cannot confirm`);
+      throw new ConflictException(
+        `Reservation ${reservationId} is ${reservation.status}, cannot confirm`,
+      );
     }
 
     try {
@@ -151,7 +162,11 @@ export class ReservationsService {
     return reservation;
   }
 
-  async cancel(reservationId: string, dto: CancelReservationDto, currentUser: AuthenticatedUser): Promise<Reservation> {
+  async cancel(
+    reservationId: string,
+    dto: CancelReservationDto,
+    currentUser: AuthenticatedUser,
+  ): Promise<Reservation> {
     const correlationId = this.cls.getId();
 
     const reservation = await this.reservations.findOne({
@@ -166,7 +181,9 @@ export class ReservationsService {
       return reservation;
     }
     if (reservation.status !== 'held' && reservation.status !== 'confirmed') {
-      throw new ConflictException(`Reservation ${reservationId} is ${reservation.status}, cannot cancel`);
+      throw new ConflictException(
+        `Reservation ${reservationId} is ${reservation.status}, cannot cancel`,
+      );
     }
 
     // Safe for both statuses: on a still-live hold this releases it and
