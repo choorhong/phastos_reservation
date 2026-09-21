@@ -374,6 +374,53 @@ describe('reservations (e2e)', () => {
     });
   });
 
+  describe('one spot per person per slot', () => {
+    it('turns away a second hold, before and after confirming, and leaves the count alone', async () => {
+      const slot = nextSlot(); // 3 spots
+      const alice = await registerUser(app, 'alice');
+      const bob = await registerUser(app, 'bob');
+
+      const first = await hold(app, alice, slot.id).expect(201);
+      await hold(app, alice, slot.id).expect(409);
+      expect(await countRows(slot.id)).toBe(1);
+      expect(await redisAvailable(slot)).toBe(2);
+
+      await confirm(app, alice, first.body.id).expect(200);
+      await hold(app, alice, slot.id).expect(409);
+      expect(await countRows(slot.id)).toBe(1);
+      expect(await redisAvailable(slot)).toBe(2);
+
+      // Someone else is unaffected.
+      await hold(app, bob, slot.id).expect(201);
+    });
+
+    it('lets a user book the slot again once they have cancelled', async () => {
+      const slot = nextSlot();
+      const alice = await registerUser(app, 'alice');
+
+      const first = await hold(app, alice, slot.id).expect(201);
+      await cancel(app, alice, first.body.id).expect(200);
+
+      await hold(app, alice, slot.id).expect(201);
+      expect(await countRows(slot.id, 'held')).toBe(1);
+      expect(await countRows(slot.id, 'cancelled')).toBe(1);
+    });
+
+    it('lets only one of a user’s simultaneous requests through and returns the other spots', async () => {
+      const slot = nextSlot(); // 3 spots
+      const alice = await registerUser(app, 'alice');
+
+      const results = await Promise.all(Array.from({ length: 6 }, () => hold(app, alice, slot.id)));
+
+      expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+      expect(results.filter((r) => r.status === 409)).toHaveLength(5);
+      expect(await countRows(slot.id)).toBe(1);
+      // Every request that lost the race must have handed its Redis spot back.
+      expect(await redisAvailable(slot)).toBe(2);
+      expect(await availableInPostgres(slot)).toBe(2);
+    });
+  });
+
   describe('many people booking the same slot at once', () => {
     it('admits exactly as many as there are spots and never double-books', async () => {
       const slot = nextSlot(); // 3 spots
@@ -511,6 +558,23 @@ describe('reservations (e2e)', () => {
       await expect(insertConfirmed(slot.id, 'b')).rejects.toThrow(/SLOT_CAPACITY_EXCEEDED/);
 
       expect(await countRows(slot.id, 'confirmed')).toBe(1);
+    });
+
+    it('refuses a second active reservation for the same user and slot even with the API bypassed', async () => {
+      const slot = nextSlot();
+      const insert = (status: string) =>
+        db.query(
+          `INSERT INTO reservations (slot_id, user_id, hold_id, status) VALUES ($1, 'direct-user', $2, $3)`,
+          [slot.id, randomUUID(), status],
+        );
+
+      await insert('held');
+      await expect(insert('confirmed')).rejects.toThrow(/uq_reservations_active_user_slot/);
+      // Closed-off rows don't count against the rule.
+      await insert('cancelled');
+      await insert('expired');
+
+      expect(await countRows(slot.id)).toBe(3);
     });
 
     it('never confirms more than the capacity when the Redis counter is stale, and says 409', async () => {

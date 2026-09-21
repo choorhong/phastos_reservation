@@ -24,8 +24,18 @@ import { Slot } from './slot.entity';
  * confirmed reservations before allowing this row to become 'confirmed',
  * so capacity is enforced here even if Redis is bypassed, stale, or lost.
  */
+export const ACTIVE_RESERVATION_UNIQUE_INDEX = 'uq_reservations_active_user_slot';
+
+/**
+ * A user has at most one `held`/`confirmed` reservation per slot (partial
+ * unique index; cancelled and expired rows don't count).
+ */
 @Entity('reservations')
 @Index(['slotId', 'status'])
+@Index(ACTIVE_RESERVATION_UNIQUE_INDEX, ['slotId', 'userId'], {
+  unique: true,
+  where: `"status" IN ('held', 'confirmed')`,
+})
 export class Reservation {
   @PrimaryGeneratedColumn('uuid')
   id: string;

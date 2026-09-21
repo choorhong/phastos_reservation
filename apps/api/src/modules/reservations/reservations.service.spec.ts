@@ -1,5 +1,6 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Location, Reservation, Slot } from '@lib/database';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { QueryFailedError } from 'typeorm';
+import { ACTIVE_RESERVATION_UNIQUE_INDEX, Location, Reservation, Slot } from '@lib/database';
 import { AuthenticatedUser } from '@app/api/modules/auth/auth.types';
 import { ReservationsService } from './reservations.service';
 
@@ -82,5 +83,63 @@ describe('ReservationsService reads', () => {
         expect.objectContaining({ where: { userId: 'alice', status: 'confirmed' } }),
       );
     });
+  });
+});
+
+describe('ReservationsService.requestHold, one spot per person per slot', () => {
+  const slot = { id: 's1', locationId: 'l1', location: { name: 'Orchard' } } as Slot;
+
+  const reservations = { exists: jest.fn(), create: jest.fn(), save: jest.fn() };
+  const slots = { findOne: jest.fn() };
+  const holds = { claim: jest.fn(), release: jest.fn() };
+  const service = new ReservationsService(
+    reservations as never,
+    slots as never,
+    holds as never,
+    { publishReservationRequested: jest.fn() } as never,
+    undefined as never,
+    { getId: () => 'corr-1' } as never,
+    { warn: jest.fn() } as never,
+  );
+
+  const uniqueViolation = (constraint: string) =>
+    new QueryFailedError(
+      'INSERT',
+      [],
+      Object.assign(new Error('duplicate'), { code: '23505', constraint }),
+    );
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+    slots.findOne.mockResolvedValue(slot);
+    reservations.exists.mockResolvedValue(false);
+    holds.claim.mockResolvedValue({ holdId: 'h1' });
+    reservations.create.mockImplementation((r) => r);
+  });
+
+  it('refuses a user who already holds or has confirmed the slot, before touching Redis', async () => {
+    reservations.exists.mockResolvedValue(true);
+
+    await expect(service.requestHold({ slotId: 's1' }, 'alice')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(holds.claim).not.toHaveBeenCalled();
+  });
+
+  it('gives the Redis spot back when a concurrent request wins the unique index', async () => {
+    reservations.save.mockRejectedValue(uniqueViolation(ACTIVE_RESERVATION_UNIQUE_INDEX));
+
+    await expect(service.requestHold({ slotId: 's1' }, 'alice')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(holds.release).toHaveBeenCalledWith('s1', 'h1');
+  });
+
+  it('does not treat some other unique violation (e.g. the holdId) as a duplicate booking', async () => {
+    const err = uniqueViolation('reservations_hold_id_key');
+    reservations.save.mockRejectedValue(err);
+
+    await expect(service.requestHold({ slotId: 's1' }, 'alice')).rejects.toBe(err);
+    expect(holds.release).not.toHaveBeenCalled();
   });
 });

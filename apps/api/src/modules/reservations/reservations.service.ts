@@ -8,8 +8,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { ClsService } from 'nestjs-cls';
 import { Logger } from 'nestjs-pino';
-import { QueryFailedError, Repository } from 'typeorm';
-import { Reservation, Slot } from '@lib/database';
+import { In, QueryFailedError, Repository } from 'typeorm';
+import { ACTIVE_RESERVATION_UNIQUE_INDEX, Reservation, Slot } from '@lib/database';
 import { AuthenticatedUser } from '@app/api/modules/auth/auth.types';
 import { EventsPublisherService } from '@app/api/modules/events/events-publisher.service';
 import { NotificationsPublisherService } from '@app/api/modules/notifications/notifications-publisher.service';
@@ -19,6 +19,15 @@ import { CancelReservationDto } from './dto/cancel-reservation.dto';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { ListReservationsDto } from './dto/list-reservations.dto';
 import { ReservationView, toReservationView } from './reservation-view';
+
+/** Postgres unique violation on the one-active-reservation-per-user-per-slot index. */
+function isActiveReservationConflict(err: unknown): boolean {
+  if (!(err instanceof QueryFailedError)) {
+    return false;
+  }
+  const { code, constraint } = err.driverError as { code?: string; constraint?: string };
+  return code === '23505' && constraint === ACTIVE_RESERVATION_UNIQUE_INDEX;
+}
 
 /**
  * Ties the four independently-verified infrastructure legs (Redis hold,
@@ -51,6 +60,15 @@ export class ReservationsService {
       throw new NotFoundException(`Slot ${dto.slotId} not found`);
     }
 
+    // One spot per person per slot. Checked before the Redis claim so a repeat
+    // request costs nothing; the unique index below catches the concurrent case.
+    const alreadyBooked = await this.reservations.exists({
+      where: { slotId: slot.id, userId, status: In(['held', 'confirmed']) },
+    });
+    if (alreadyBooked) {
+      throw new ConflictException(`You already have a reservation for slot ${slot.id}`);
+    }
+
     let hold;
     try {
       hold = await this.slotHoldService.claim(dto.slotId, userId);
@@ -61,15 +79,26 @@ export class ReservationsService {
       throw err;
     }
 
-    const reservation = await this.reservations.save(
-      this.reservations.create({
-        slotId: slot.id,
-        userId,
-        holdId: hold.holdId,
-        status: 'held',
-        correlationId,
-      }),
-    );
+    let reservation: Reservation;
+    try {
+      reservation = await this.reservations.save(
+        this.reservations.create({
+          slotId: slot.id,
+          userId,
+          holdId: hold.holdId,
+          status: 'held',
+          correlationId,
+        }),
+      );
+    } catch (err) {
+      if (isActiveReservationConflict(err)) {
+        // Two requests from this user raced past the check above. The claim
+        // already took a spot in Redis, so give it back.
+        await this.slotHoldService.release(slot.id, hold.holdId);
+        throw new ConflictException(`You already have a reservation for slot ${slot.id}`);
+      }
+      throw err;
+    }
 
     try {
       await this.events.publishReservationRequested(
