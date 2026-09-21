@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after limiting each user to one spot per slot (Step 16)
+## Status: paused after limiting each user to one spot per slot (Step 16); real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1246,9 +1246,10 @@ Resolves Step 13, finding 3: one account could hold every spot in a slot.
 
 - **The migration fails if existing data breaks the rule** (a user with two
   active reservations on one slot). The comment in the migration has the query
-  to find them; cancel the extras by hand first. It has **not been applied to
-  the dev database** — only to the separate e2e one. Run `npm run typeorm --
-  migration:run -d libs/database/src/data-source.ts`.
+  to find them; cancel the extras by hand first. It is applied to both the
+  e2e database and the dev database (checked with `migration:show`: all six
+  migrations run, and `uq_reservations_active_user_slot` exists in the dev
+  database with the `held`/`confirmed` predicate).
 - Between a hold's Redis TTL expiring and the reaper marking its row
   `expired`, that user gets a 409 if they rebook. It clears within a reaper
   cycle.
@@ -1368,17 +1369,20 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: real notifications, then CI
+## Next step: Dockerfiles and CI (real notifications on hold)
 
 **Suggested order:**
 
-1. **Real notifications:** the payloads now carry the location's `timezone`
-   (Step 15). Still to do: render emails in store-local time with
-   `toSlotLocalTimes`, get the recipient's email address (the payloads only
-   have `userId`), and pick a provider (SendGrid/SES, or Mailpit locally).
-2. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
+1. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
    e2e suite needs the four services, so CI would use the docker-compose
    file (or service containers).
+2. **Real notifications — ON HOLD until a mail provider is decided.** The
+   payloads already carry the location's `timezone` (Step 15). Still to do:
+   render emails in store-local time with `toSlotLocalTimes`, get the
+   recipient's email address (the payloads only have `userId`; leaning
+   towards looking the user up in Postgres from the worker rather than
+   putting the address on the queue), and pick a provider (SendGrid/SES, or
+   Mailpit locally to see real emails first).
 
 **Open decisions and loose ends** (not blockers):
 
@@ -1387,25 +1391,17 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
   (fine while it has no reservations; `slots` cascade, `reservations` do
   not). Add one if needed; changing a timezone would also mean regenerating
   its future slots.
-- **The seeded Orchard and Santa Monica locations rest on assumptions.**
-  Orchard was given `Asia/Singapore` (Orchard Road) and Santa Monica
-  `America/Los_Angeles`, and both street addresses (`2 Orchard Turn,
-  Singapore 238801`, `395 Santa Monica Pl, Santa Monica, CA 90401`) were
-  filled in by Claude, not supplied. Check them before they are shown to
-  anyone.
 - **Should closing off a slot-full confirm publish events?** Today (Step 13,
   finding 2) the reservation becomes `cancelled` with no `ReservationCancelled`
   event and no reason, because none of the existing reasons fit. If
   downstream consumers should see it, add a reason and publish.
-- **Old test users** (`verify…`, `full…`, `sched…@example.com`) are still in
-  the dev database and can be deleted.
 
 **Can wait** (none of these block the work above):
 
 - **Real email integration** in `notification-worker` (SendGrid/SES). Today
   it validates the payload and logs `notification.delivered`, so "confirmation
-  email" and "reminder" send nothing. Pairs with the timezone work under
-  Step 11.
+  email" and "reminder" send nothing. Blocked on choosing a provider (see the
+  on-hold item above); the timezone half is done (Step 15).
 - **`event-consumer` is a stub**: it dedupes and logs, with no real
   analytics, audit or inventory-sync behind it.
 - **Swagger/OpenAPI docs**: none.
