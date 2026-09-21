@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after adding `timezone` to the notification payloads (Step 15)
+## Status: paused after limiting each user to one spot per slot (Step 16)
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1092,7 +1092,8 @@ E2E_LOGS=1 npm run test:e2e   # same, with the app's logs switched back on
    now uses a targeted `update`.
 3. **The same user can hold several spots in one slot** — `requestHold` has
    no per-user check, so one account can take all 3 spots. Seen by reading
-   the code; not tested, and it may be fine if that is intended. **Open.**
+   the code; not tested, and it may be fine if that is intended.
+   **FIXED in Step 16** (one active reservation per user per slot).
 4. **Nothing closed the Kafka/RabbitMQ/Redis connections on shutdown —
    FIXED**, so jest could not exit after `app.close()` and a real SIGTERM
    killed the process without closing them. `KafkaShutdownService`,
@@ -1216,6 +1217,58 @@ without a zone would use its own server's timezone, so a Singapore Monday
   The e2e suite only spies on `publishConfirmationEmail`, so it is not
   expected to be affected.
 
+## Step 16 — One spot per person per slot ✅
+
+Resolves Step 13, finding 3: one account could hold every spot in a slot.
+
+### What changed
+
+- **"Person" means `userId`** — the `users` table's UUID primary key, the
+  JWT `sub`. Email is unique on `users`, but the reservation code never sees
+  it, and the rule cannot stop someone registering a second account.
+- **Pre-check in `ReservationsService.requestHold`**: if the user already has
+  a `held` or `confirmed` reservation for the slot, 409 before anything is
+  claimed in Redis.
+- **Migration `OneActiveReservationPerUserPerSlot`**: partial unique index
+  `uq_reservations_active_user_slot` on `(slot_id, user_id) WHERE status IN
+  ('held', 'confirmed')`, also declared on the `Reservation` entity
+  (`ACTIVE_RESERVATION_UNIQUE_INDEX`). This is the race-proof backstop.
+  Cancelled and expired rows are outside the index, so a user can book the
+  slot again after cancelling.
+- **Redis cleanup on the race path**: when two requests from one user pass the
+  pre-check together, the loser has already taken a spot in Redis before its
+  insert hits the index. The service now catches that specific violation
+  (Postgres `23505` on that constraint name), calls `SlotHoldService.release`
+  and returns 409. Other unique violations (e.g. `hold_id`) are not treated as
+  duplicates and still surface as errors.
+
+### Things worth knowing
+
+- **The migration fails if existing data breaks the rule** (a user with two
+  active reservations on one slot). The comment in the migration has the query
+  to find them; cancel the extras by hand first. It has **not been applied to
+  the dev database** — only to the separate e2e one. Run `npm run typeorm --
+  migration:run -d libs/database/src/data-source.ts`.
+- Between a hold's Redis TTL expiring and the reaper marking its row
+  `expired`, that user gets a 409 if they rebook. It clears within a reaper
+  cycle.
+- `confirm` is unaffected: `held` → `confirmed` stays inside the index's
+  predicate, so it never changes a row's uniqueness.
+
+### Verified
+
+- `tsc --noEmit` clean; 84 jest tests (3 new: pre-check runs before the Redis
+  claim, the race path releases the spot, other unique violations are not
+  swallowed); e2e suite 76/76 against the real containers.
+- New e2e tests: second hold refused before and after confirm with the
+  Postgres and Redis counts unchanged, and other users unaffected; rebooking
+  after cancel; six simultaneous holds from one user give one 201 and five
+  409s with Redis and Postgres availability both ending at 2; and a direct SQL
+  insert bypassing the API is rejected by the index (cancelled/expired rows are
+  allowed).
+- Mutation check: with the `release` call removed, the simultaneous-requests
+  test fails (`Expected: 2, Received: 0`), so it does guard the Redis cleanup.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1319,16 +1372,11 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
 
 **Suggested order:**
 
-1. **Decide whether one user may hold more than one spot in the same slot**
-   (Step 13, finding 3) — deliberately skipped for now, still open. My
-   recommendation was to block it (service check before the Redis claim, plus
-   a partial unique index on `(slot_id, user_id) WHERE status IN
-   ('held','confirmed')` as the race-proof backstop, plus e2e tests).
-2. **Real notifications:** the payloads now carry the location's `timezone`
+1. **Real notifications:** the payloads now carry the location's `timezone`
    (Step 15). Still to do: render emails in store-local time with
    `toSlotLocalTimes`, get the recipient's email address (the payloads only
    have `userId`), and pick a provider (SendGrid/SES, or Mailpit locally).
-3. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
+2. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
    e2e suite needs the four services, so CI would use the docker-compose
    file (or service containers).
 
