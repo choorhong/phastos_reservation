@@ -27,6 +27,7 @@ export interface ConfirmationEmailPayload {
   reservationId: string;
   userId: string;
   locationName: string;
+  timezone: string; // IANA zone of the location; the slot times below are UTC instants
   slotStartTime: string; // ISO 8601
   slotEndTime: string; // ISO 8601
 }
@@ -35,6 +36,7 @@ export interface ReminderPayload {
   reservationId: string;
   userId: string;
   locationName: string;
+  timezone: string; // IANA zone of the location; the slot time below is a UTC instant
   slotStartTime: string; // ISO 8601
 }
 

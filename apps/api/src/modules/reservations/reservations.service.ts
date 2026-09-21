@@ -179,6 +179,7 @@ export class ReservationsService {
           reservationId: reservation.id,
           userId: reservation.userId,
           locationName: slot.location.name,
+          timezone: slot.location.timezone,
           slotStartTime: slot.startTime.toISOString(),
           slotEndTime: slot.endTime.toISOString(),
         },

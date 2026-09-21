@@ -88,6 +88,7 @@ export class ReminderSweepService implements OnModuleInit, OnModuleDestroy {
         reservationId: reservation.id,
         userId: reservation.userId,
         locationName: reservation.slot.location.name,
+        timezone: reservation.slot.location.timezone,
         slotStartTime: reservation.slot.startTime.toISOString(),
       },
       correlationId,
