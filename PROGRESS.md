@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after limiting each user to one spot per slot (Step 16); real notifications on hold until a mail provider is chosen
+## Status: paused after adding `PATCH /locations/:id` (Step 17); real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1270,6 +1270,41 @@ Resolves Step 13, finding 3: one account could hold every spot in a slot.
 - Mutation check: with the `release` call removed, the simultaneous-requests
   test fails (`Expected: 2, Received: 0`), so it does guard the Redis cleanup.
 
+## Step 17 — `PATCH /locations/:id` ✅
+
+Locations could be created and listed but never corrected.
+
+### What changed
+
+- **`PATCH /locations/:id`** (admin only; `ParseUUIDPipe` on the id, so a
+  malformed id is 400 and an unknown location 404). New `UpdateLocationDto`
+  and `LocationsService.update`, in `apps/api/src/modules/locations/`.
+- **Only `name` and `address` are editable**, and either may be sent alone.
+  An empty string or a non-string value is 400 (same rules as create).
+- **Everything else in the body is ignored, not rejected** — `timezone`
+  included, and any other field (`id`, `slots`, …). This needs no extra code:
+  the global `ValidationPipe({ whitelist: true })` already drops properties
+  the DTO doesn't declare. A body with no editable field returns the location
+  unchanged with a 200 (no write).
+- **Timezone is deliberately not editable.** The location's slots were
+  generated in it, so changing it would mean regenerating them and deciding
+  what happens to booked ones. Chosen with the user: name/address only.
+
+### Things worth knowing
+
+- **Slots are untouched by an edit.** An e2e test sends a timezone change and
+  checks the slots' UTC instants and local times are identical afterwards.
+- Since the address is editable, the seeded Orchard / Santa Monica addresses
+  (filled in by Claude, never confirmed) can be corrected through the API.
+
+### Verified
+
+- `tsc --noEmit` clean; 84 jest tests; e2e suite 85/85 against the real
+  containers (9 new, in `catalog.e2e-spec.ts`): name+address change shows in
+  the list, one field alone, timezone and other fields ignored with slots
+  unchanged, body with no editable field, three invalid inputs (400),
+  non-admin (403) and no token (401), unknown id (404) and malformed id (400).
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1386,11 +1421,11 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
 
 **Open decisions and loose ends** (not blockers):
 
-- **Locations can't be edited.** There is no `PATCH /locations/:id`, so a
-  wrong address or timezone means deleting and recreating the location
-  (fine while it has no reservations; `slots` cascade, `reservations` do
-  not). Add one if needed; changing a timezone would also mean regenerating
-  its future slots.
+- **A location's timezone can't be changed.** `PATCH /locations/:id` (Step 17)
+  edits only name and address, so a wrong timezone still means deleting and
+  recreating the location (fine while it has no reservations; `slots`
+  cascade, `reservations` do not). Allowing it would mean regenerating the
+  future slots, and deciding what happens to booked ones.
 - **Should closing off a slot-full confirm publish events?** Today (Step 13,
   finding 2) the reservation becomes `cancelled` with no `ReservationCancelled`
   event and no reason, because none of the existing reasons fit. If
