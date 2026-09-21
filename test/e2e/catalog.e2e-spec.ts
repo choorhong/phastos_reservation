@@ -64,6 +64,102 @@ describe('locations and generated slots (e2e)', () => {
         .send(body)
         .expect(400);
     });
+
+    describe('editing (PATCH)', () => {
+      const patch = (token: string, id: string, body: object) =>
+        http(app).patch(`/locations/${id}`).set('Authorization', bearer(token)).send(body);
+
+      it('changes the name and address, and shows up in the list', async () => {
+        const location = await createLocation(app, admin);
+
+        const res = await patch(admin.token, location.id, {
+          name: 'Renamed Store',
+          address: '9 New Road',
+        }).expect(200);
+
+        expect(res.body).toMatchObject({
+          id: location.id,
+          name: 'Renamed Store',
+          address: '9 New Road',
+          timezone: location.timezone,
+        });
+        const list = await http(app)
+          .get('/locations')
+          .set('Authorization', bearer(user.token))
+          .expect(200);
+        expect(list.body.find((l: LocationJson) => l.id === location.id)).toMatchObject({
+          name: 'Renamed Store',
+          address: '9 New Road',
+        });
+      });
+
+      it('changes one field and leaves the other alone', async () => {
+        const location = await createLocation(app, admin);
+
+        const res = await patch(admin.token, location.id, { address: '2 Other Street' }).expect(
+          200,
+        );
+
+        expect(res.body).toMatchObject({ name: location.name, address: '2 Other Street' });
+      });
+
+      it('ignores the timezone and any other field, and leaves the slots alone', async () => {
+        const location = await createLocation(app, admin, { timezone: 'Asia/Singapore' });
+        const before = await listSlots(app, admin, { locationId: location.id });
+
+        const res = await patch(admin.token, location.id, {
+          name: 'Still Singapore',
+          timezone: 'America/New_York',
+          id: randomUUID(),
+          slots: [],
+          isAdmin: true,
+        }).expect(200);
+
+        expect(res.body).toMatchObject({
+          id: location.id,
+          name: 'Still Singapore',
+          timezone: 'Asia/Singapore',
+        });
+        const after = await listSlots(app, admin, { locationId: location.id });
+        expect(after.map((s) => [s.id, s.startTime, s.localStartTime])).toEqual(
+          before.map((s) => [s.id, s.startTime, s.localStartTime]),
+        );
+      });
+
+      it('changes nothing when the body has no editable field', async () => {
+        const location = await createLocation(app, admin);
+
+        const res = await patch(admin.token, location.id, { timezone: 'America/New_York' }).expect(
+          200,
+        );
+
+        expect(res.body).toMatchObject({
+          name: location.name,
+          address: location.address,
+          timezone: location.timezone,
+        });
+      });
+
+      it.each([
+        ['an empty name', { name: '' }],
+        ['an empty address', { address: '' }],
+        ['a name that is not a string', { name: 42 }],
+      ])('rejects %s', async (_label, body) => {
+        const location = await createLocation(app, admin);
+        await patch(admin.token, location.id, body).expect(400);
+      });
+
+      it('is for admins only', async () => {
+        const location = await createLocation(app, admin);
+        await patch(user.token, location.id, { name: 'Hijacked' }).expect(403);
+        await http(app).patch(`/locations/${location.id}`).send({ name: 'x' }).expect(401);
+      });
+
+      it('404s an unknown location and 400s a malformed id', async () => {
+        await patch(admin.token, randomUUID(), { name: 'x' }).expect(404);
+        await patch(admin.token, 'not-a-uuid', { name: 'x' }).expect(400);
+      });
+    });
   });
 
   describe('slot generation', () => {
