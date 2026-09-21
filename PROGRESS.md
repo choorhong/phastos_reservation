@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after adding the end-to-end test suite and fixing the two gaps it found (Step 13)
+## Status: paused after adding unit tests for `@lib/config` (Step 14)
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1139,6 +1139,44 @@ E2E_LOGS=1 npm run test:e2e   # same, with the app's logs switched back on
   Orchard and Santa Monica with 84 slots each, the admin and the older
   `@example.com` users. No leftover Redis keys.
 
+## Step 14 — Unit tests for `@lib/config` ✅
+
+### What changed
+
+- **`load-environment.ts` (new)**: the parsing that used to be a private
+  `load()` inside `environment-variables.ts`, now the exported pure function
+  `loadEnvironment(env, schema = environmentSchema)`. It touches neither
+  dotenv nor `process.env`, so it can be run against any environment.
+  `environment-variables.ts` is now just `loadDotenv()` plus
+  `loadEnvironment(process.env)`. **No behaviour change**: same parsing, same
+  error messages. The split was needed for testing: importing
+  `environment-variables.ts` loads the real `.env` and validates it on the
+  spot, so the missing-variable cases couldn't be exercised, and the import
+  itself would throw anywhere there is no `.env` (e.g. CI).
+- **`load-environment.spec.ts` (46 tests)**: each parse type against a small
+  custom schema (the real one has no `boolean` yet) — numbers (incl. `1e3`,
+  rejecting `abc`/`12px`/`NaN`), booleans (case/whitespace, rejecting
+  `yes`/`on`/`2`), lists (trimming, stray commas, no items = missing); empty
+  string or whitespace-only = unset; every missing name in one error in schema order; a
+  malformed value throws before the missing-list does; optional variables.
+  Plus three checks against the *real* schema: a full environment loads,
+  exactly `ADMIN_EMAIL`/`ADMIN_PASSWORD`/`NODE_ENV` are optional, and the ADMIN
+  pair may be absent.
+- **`app-config.service.spec.ts` (5 tests)**: `get`, `getOrThrow` (with the
+  variable named in the error), and `EnvKey` matching the schema's keys
+  exactly. Mocks `./environment-variables` for the same import-time reason.
+- 81 jest tests in all (`npm test`), no services or `.env` needed.
+
+### Things worth knowing
+
+- **Every value is trimmed before it is read** (`env[name]?.trim()`), so a
+  whitespace-only variable counts as unset. Writing the tests turned up that
+  without this, `PORT="  "` was parsed as `0` (`Number('  ')`) and a
+  whitespace-only string was accepted as a value. **Side effect:** string
+  values are trimmed too, so a secret with deliberate leading/trailing spaces
+  (only possible via a quoted value, since dotenv already trims unquoted ones)
+  would be altered.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1238,18 +1276,19 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: real notifications, unit tests for config, then CI
+## Next step: real notifications, then CI
 
 **Suggested order:**
 
 1. **Decide whether one user may hold more than one spot in the same slot**
-   (Step 13, finding 3) — the two real gaps the e2e suite found are fixed.
-2. **Unit tests for `@lib/config`** (parsers, missing-variable error,
-   `list`/`boolean`) — the e2e suite exercises config only indirectly.
-3. **Real notifications:** add the location's timezone to the RabbitMQ
+   (Step 13, finding 3) — deliberately skipped for now, still open. My
+   recommendation was to block it (service check before the Redis claim, plus
+   a partial unique index on `(slot_id, user_id) WHERE status IN
+   ('held','confirmed')` as the race-proof backstop, plus e2e tests).
+2. **Real notifications:** add the location's timezone to the RabbitMQ
    payloads and render emails in store-local time (Step 11, "Local-time
    conversion still to do").
-4. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
+3. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
    e2e suite needs the four services, so CI would use the docker-compose
    file (or service containers).
 
@@ -1306,7 +1345,7 @@ reservation. What's left before this is a real system, beyond the list above:
 - No CI/CD and no Dockerfiles for the three apps themselves (only their
   infra dependencies run in docker-compose).
 - Test coverage is the unit tests for the slot/local-time/reservation-view
-  logic plus the api e2e suite; there is still nothing for `@lib/config`,
+  logic and `@lib/config`, plus the api e2e suite; there is still nothing for
   `notification-worker` or `event-consumer`.
 
 Solid and verified end-to-end:
