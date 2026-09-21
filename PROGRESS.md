@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after adding unit tests for `@lib/config` (Step 14)
+## Status: paused after adding `timezone` to the notification payloads (Step 15)
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -895,14 +895,8 @@ machine's or the viewer's default (a Singapore Monday 10:00 slot is Sunday
 7pm for a viewer in California). `GET /slots` (this step) and the
 reservation endpoints (Step 12) now do this. Still to do:
 
-- **RabbitMQ payloads** (`libs/rabbitmq-contracts/src/notification-messages.ts`):
-  `ConfirmationEmailPayload` (`slotStartTime`, `slotEndTime`) and
-  `ReminderPayload` (`slotStartTime`) carry ISO UTC and `locationName` but
-  **no timezone**, so a consumer can't render them correctly. Add the
-  location's `timezone` (or the precomputed local fields) to both. The
-  reminder sweep (`reminder-sweep.service.ts`) already loads
-  `slot.location`, so the timezone is on hand there; the confirm path in
-  `reservations.service.ts` now loads the location too.
+- ~~**RabbitMQ payloads**~~ — done in Step 15: both payloads now carry
+  `timezone`.
 - **Real email rendering** (`notification-worker`, not built — consumers
   only log today): render the time in the location's timezone with the
   zone named ("Mon 21 Sep, 10:00 AM–12:00 PM SGT"), using `@lib/time`
@@ -1177,6 +1171,51 @@ E2E_LOGS=1 npm run test:e2e   # same, with the app's logs switched back on
   (only possible via a quoted value, since dotenv already trims unquoted ones)
   would be altered.
 
+## Step 15 — `timezone` on the confirmation-email and reminder payloads ✅
+
+### Why
+
+Slot times are stored and passed as UTC instants. A consumer that renders
+them for a person needs the location's IANA zone, and the payloads carried
+only `locationName` plus UTC ISO strings. A worker that formatted them
+without a zone would use its own server's timezone, so a Singapore Monday
+10:00 slot (`02:00Z`) would read "Monday 02:00" on a UTC container.
+
+### What changed
+
+- `libs/rabbitmq-contracts/src/notification-messages.ts`: `timezone: string`
+  added to `ConfirmationEmailPayload` and `ReminderPayload`.
+  `ReceiptPayload` is unchanged (it has `confirmedAt` only, no slot times).
+- `reservations.service.ts` (confirm path) sends `slot.location.timezone`.
+- `reminder-sweep.service.ts` sends `reservation.slot.location.timezone`.
+  Both sites already loaded `slot.location`, so no extra query.
+- The slot times stay UTC ISO strings; only the zone was added, so the
+  instants remain usable for exact maths.
+
+### Things worth knowing
+
+- **Nothing reads the field yet.** The worker still only validates the
+  payload and logs `notification.delivered`. When real emails are built, the
+  worker should call `toSlotLocalTimes(payload.timezone, new Date(start),
+  new Date(end))` from `@lib/time` (returns `localDate`, `localStartTime`,
+  `localEndTime`). That already covers correctness; it does not give weekday/
+  month names or a zone abbreviation ("SGT"), which are cosmetic and can be
+  added to `SlotLocalTimes` if the email text needs them.
+- **`timezone` is required, not optional.** Messages already sitting in
+  `q.confirmation-email` / `q.reminder` from before this change lack it.
+  Irrelevant locally; in a deployed system, drain the queues first or have
+  the worker fall back to looking it up from the reservation.
+- The consumer's payload check (`notification-consumers.service.ts`) only
+  requires `reservationId`/`userId`; it does not check `timezone`. Add that
+  when the consumer starts using it.
+
+### Verified
+
+- `tsc --noEmit` clean; 81 jest tests pass.
+- **Not run:** the e2e suite (needs the four containers) and a live publish.
+  The e2e suite only spies on `publishConfirmationEmail`, so it is not
+  expected to be affected.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1285,9 +1324,10 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    recommendation was to block it (service check before the Redis claim, plus
    a partial unique index on `(slot_id, user_id) WHERE status IN
    ('held','confirmed')` as the race-proof backstop, plus e2e tests).
-2. **Real notifications:** add the location's timezone to the RabbitMQ
-   payloads and render emails in store-local time (Step 11, "Local-time
-   conversion still to do").
+2. **Real notifications:** the payloads now carry the location's `timezone`
+   (Step 15). Still to do: render emails in store-local time with
+   `toSlotLocalTimes`, get the recipient's email address (the payloads only
+   have `userId`), and pick a provider (SendGrid/SES, or Mailpit locally).
 3. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
    e2e suite needs the four services, so CI would use the docker-compose
    file (or service containers).
