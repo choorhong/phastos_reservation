@@ -26,9 +26,11 @@ export class ListSlotsDto {
   /** Defaults to now if omitted -- past slots aren't bookable, so don't return them by default. */
   @IsOptional()
   @IsDateString()
+  @ApiPropertyOptional({ example: '2026-09-22T00:00:00Z' })
   from?: string;
 
   @IsOptional()
   @IsDateString()
+  @ApiPropertyOptional({ example: '2026-09-29T00:00:00Z' })
   to?: string;
 }
