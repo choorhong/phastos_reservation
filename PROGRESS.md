@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after config cleanups (Step 18); real notifications on hold until a mail provider is chosen
+## Status: paused after Swagger/OpenAPI docs (Step 19); real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1348,6 +1348,103 @@ Two of the three items under Step 10's "Config cleanups" note.
 - Containers unchanged and healthy. No app processes left running.
 - `package-lock.json` updated by the `@nestjs/config` removal.
 
+## Step 19 — Swagger/OpenAPI docs ✅
+
+Resolves the "Swagger/OpenAPI docs: none" backlog item.
+
+### What changed
+
+- **`@nestjs/swagger@^7.4.2`** (pinned to the v7 line -- v12 needs Nest 12;
+  this repo is on Nest 10). `npm install` needed `--legacy-peer-deps`-style
+  override (`@nestjs/mapped-types`, pulled in transitively, declares a peer
+  range of `class-validator@^0.13.0 || ^0.14.0`; this repo is on `0.15.1`.
+  `npm ls` flags it `invalid` but nothing broke -- checked with the full test
+  suite and a real boot, below).
+- **`nest-cli.json`**: added the `@nestjs/swagger/plugin` CLI plugin
+  (`introspectComments: true`) to the root `compilerOptions`. It auto-adds
+  `@ApiProperty()` to every class field it can see (DTOs, entities, the new
+  response classes below) from the field's real TS type, and pulls
+  descriptions straight from this codebase's existing JSDoc comments -- so
+  none of the nine request DTOs (`RegisterDto`, `CreateLocationDto`,
+  `ListSlotsDto`, etc.) needed a single manual decorator.
+- **`apps/api/src/main.ts`**: `SwaggerModule.setup('docs', app, document)`,
+  `DocumentBuilder` with `.addBearerAuth()`. Deliberately not in
+  `app.setup.ts` (the config shared with the e2e suite) -- it's static
+  documentation generation, not request handling, so there's nothing there
+  worth exercising on every jest boot. **`/docs` is unauthenticated**, same
+  as every `GET` endpoint it describes.
+- **`@ApiTags`/`@ApiBearerAuth`/`@ApiOperation`** added to all five
+  controllers (`health`, `auth`, `locations`, `slots`, `reservations`).
+  `@ApiBearerAuth()` is class-level on the three that are entirely behind
+  `JwtAuthGuard`; `auth`/`health` carry neither, matching their actual guard
+  setup -- confirmed in the generated document that only those two routes
+  have no `security` requirement.
+- **Three interfaces became classes, purely so they also work as OpenAPI
+  response schemas** (the plugin only introspects real classes, not
+  interfaces -- confirmed by testing: TypeORM entities like `Location` got
+  full schemas for free, `ReservationView` as a plain interface got a bare
+  `{type: object}`). All three still return plain object literals, never
+  constructed instances, so **this changed no runtime behavior**, only the
+  compile-time type used for documentation and jest's structural equality
+  checks don't care about a return value's actual prototype:
+  - `SlotLocalTimes` (`@lib/time`) -- now the single reusable definition of
+    the four local-time fields, decorated once.
+  - `SlotWithAvailability` (`slot-admin.service.ts`) -- `extends Slot`
+    (inherits its ~9 fields for free) plus its own five fields
+    (`available` + the four local-time ones, redeclared rather than also
+    extending `SlotLocalTimes` since a class can only extend one class).
+  - `ReservationView` (`reservation-view.ts`) -- plus two small new classes,
+    `ReservationSlotView` (`extends SlotLocalTimes`) and
+    `ReservationLocationView`, for its two nested objects.
+  - `confirmedAt`/`cancelledAt` (`Date | null`) needed an explicit
+    `@ApiProperty({ type: Date, nullable: true })` -- the plugin's
+    inference falls back to a bare `object` for a nullable-union field
+    without it (found by generating the document and inspecting it, not by
+    reading the plugin's source).
+- **`AuthResponseDto`** (`{ accessToken: string }`, previously an inline
+  return type) and **`GenerateSlotsResponseDto`** (`{ created: number }`,
+  `POST /slots/generate`'s response) are new, single-purpose classes for the
+  same reason -- an inline object type annotation doesn't resolve to a
+  named schema either.
+
+### Things worth knowing
+
+- **`/docs` has no auth**, in an app where every other `GET` is already
+  open to any authenticated role and most of the design decisions
+  (rate limiting, JWT/ADMIN_PASSWORD placeholders) are already flagged
+  elsewhere in this file as pre-production loose ends. Gate it behind
+  `NODE_ENV`/an admin check if that ever needs to change.
+- **Only `apps/api` has Swagger.** `notification-worker`/`event-consumer`
+  have no HTTP surface beyond `/health`, so neither needed the dependency or
+  the plugin; `@lib/time`'s new `@nestjs/swagger` import doesn't reach
+  either app's bundle since neither currently imports `@lib/time` (checked
+  the built bundle sizes -- unchanged).
+- The plugin's schema inference is generic over any class reachable from a
+  controller return type, decorated or not (TypeORM entities have no
+  `@ApiProperty` anywhere and still got full schemas) -- the manual
+  `@ApiProperty()` calls added here are for enums (`status`, `cancelReason`
+  -- string-literal unions aren't auto-detected as enums), the `Date | null`
+  case above, and a few `example` values, not because the plugin needed
+  them to find the fields at all.
+
+### Verified
+
+- `tsc --noEmit` clean; 84 jest tests; 85 e2e tests, all against the real
+  containers.
+- Generated `/docs-json` and inspected it directly (not just eyeballed
+  `/docs`): all 12 routes present with the right `security` requirement
+  each; every request DTO and response class resolved to a real `$ref`
+  schema with correctly typed fields (including the nested
+  `ReservationView.slot`/`.location` and `SlotWithAvailability`'s inherited
+  `Slot` fields) -- none fell back to a bare `{type: object}`.
+- All three apps rebuilt and booted from the built bundles; `/health` 200 on
+  all three, `/docs` 200 on `api`, no errors in any boot log.
+
+### Current environment state (as of pausing)
+
+- Containers unchanged and healthy. No app processes left running.
+- `package-lock.json`/`package.json` updated by the `@nestjs/swagger` install.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1477,7 +1574,6 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
   on-hold item above); the timezone half is done (Step 15).
 - **`event-consumer` is a stub**: it dedupes and logs, with no real
   analytics, audit or inventory-sync behind it.
-- **Swagger/OpenAPI docs**: none.
 - **Rate limiting** beyond DTO validation: none.
 - **Config cleanups** (Step 10, "Things worth knowing"): two of the three
   done in Step 18 (dropped `ConfigModule.forRoot()`/`@nestjs/config`, typed

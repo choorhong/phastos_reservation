@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcryptjs';
 import { Repository } from 'typeorm';
 import { User } from '@lib/database';
+import { AuthResponseDto } from './dto/auth-response.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -17,7 +18,7 @@ export class AuthService {
   ) {}
 
   /** Always creates `role: 'user'` -- see `User` entity's doc comment on why. */
-  async register(dto: RegisterDto): Promise<{ accessToken: string }> {
+  async register(dto: RegisterDto): Promise<AuthResponseDto> {
     const existing = await this.users.findOne({ where: { email: dto.email } });
     if (existing) {
       throw new ConflictException('Email already registered');
@@ -30,7 +31,7 @@ export class AuthService {
     return this.issueToken(user);
   }
 
-  async login(dto: LoginDto): Promise<{ accessToken: string }> {
+  async login(dto: LoginDto): Promise<AuthResponseDto> {
     const user = await this.users.findOne({ where: { email: dto.email } });
     if (!user || !(await bcrypt.compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid credentials');
@@ -38,7 +39,7 @@ export class AuthService {
     return this.issueToken(user);
   }
 
-  private issueToken(user: User): { accessToken: string } {
+  private issueToken(user: User): AuthResponseDto {
     return { accessToken: this.jwt.sign({ sub: user.id, role: user.role }) };
   }
 }

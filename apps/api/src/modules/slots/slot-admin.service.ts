@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ApiProperty } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Redis } from 'ioredis';
 import {
@@ -20,12 +21,33 @@ import {
 import { AppConfigService } from '@lib/config';
 import { Location, Reservation, Slot } from '@lib/database';
 import { slotKeys } from '@lib/redis-scripts';
-import { localDayRange, SlotLocalTimes, toSlotLocalTimes } from '@lib/time';
+import { localDayRange, toSlotLocalTimes } from '@lib/time';
 import { REDIS_CLIENT } from '@app/api/modules/redis/redis-client.provider';
 import { ListSlotsDto } from './dto/list-slots.dto';
 
-export interface SlotWithAvailability extends Slot, SlotLocalTimes {
+/**
+ * A class rather than a plain interface so it also works as an OpenAPI
+ * response schema -- `findMany` below still returns plain object literals,
+ * never constructed instances, so this has no effect on the actual runtime
+ * value. `Slot`'s own fields are inherited; the local-time fields are
+ * redeclared rather than also extending `SlotLocalTimes` since TypeScript
+ * classes can only extend one class.
+ */
+export class SlotWithAvailability extends Slot {
+  @ApiProperty()
   available: number;
+
+  @ApiProperty()
+  timezone: string;
+
+  @ApiProperty()
+  localDate: string;
+
+  @ApiProperty()
+  localStartTime: string;
+
+  @ApiProperty()
+  localEndTime: string;
 }
 
 /**

@@ -1,12 +1,27 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { DateTime } from 'luxon';
 
-export interface SlotLocalTimes {
+/**
+ * A class rather than a plain interface so it also works as an OpenAPI
+ * response schema (see `slot-admin.service.ts`/`reservation-view.ts`, which
+ * embed it in what they document) -- `toSlotLocalTimes` below still returns
+ * a plain object literal, never a constructed instance, so this has no
+ * effect on the actual runtime value.
+ */
+export class SlotLocalTimes {
   /** The location's IANA timezone the fields below are expressed in. */
+  @ApiProperty({ example: 'Asia/Singapore' })
   timezone: string;
+
   /** `YYYY-MM-DD`, the calendar day of the slot's start in `timezone`. */
+  @ApiProperty({ example: '2026-09-22' })
   localDate: string;
+
   /** `HH:mm` (24-hour) in `timezone`. */
+  @ApiProperty({ example: '10:00' })
   localStartTime: string;
+
+  @ApiProperty({ example: '12:00' })
   localEndTime: string;
 }
 
