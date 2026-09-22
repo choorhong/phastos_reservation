@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Module } from '@nestjs/common';
+import { environmentVariables } from '@lib/config';
 import { ClsModule } from 'nestjs-cls';
 import { LoggerModule } from 'nestjs-pino';
 import type { IncomingMessage } from 'http';
@@ -40,13 +41,13 @@ function extractCorrelationId(req: IncomingMessage): string {
     LoggerModule.forRoot({
       pinoHttp: {
         // Jest sets NODE_ENV=test; keep test output readable.
-        level: process.env.NODE_ENV === 'test' ? 'silent' : 'info',
+        level: environmentVariables.NODE_ENV === 'test' ? 'silent' : 'info',
         genReqId: (req: IncomingMessage) => extractCorrelationId(req),
         customProps: (req: IncomingMessage & { id?: string }) => ({
           correlationId: req.id,
         }),
         transport:
-          process.env.NODE_ENV === 'production'
+          environmentVariables.NODE_ENV === 'production'
             ? undefined
             : { target: 'pino-pretty', options: { singleLine: true } },
       },

@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after adding `PATCH /locations/:id` (Step 17); real notifications on hold until a mail provider is chosen
+## Status: paused after config cleanups (Step 18); real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1288,7 +1288,9 @@ Locations could be created and listed but never corrected.
   unchanged with a 200 (no write).
 - **Timezone is deliberately not editable.** The location's slots were
   generated in it, so changing it would mean regenerating them and deciding
-  what happens to booked ones. Chosen with the user: name/address only.
+  what happens to booked ones. Chosen with the user: name/address only. A
+  wrong timezone therefore still means deleting and recreating the location
+  (fine while it has no reservations; `slots` cascade, `reservations` do not).
 
 ### Things worth knowing
 
@@ -1304,6 +1306,47 @@ Locations could be created and listed but never corrected.
   the list, one field alone, timezone and other fields ignored with slots
   unchanged, body with no editable field, three invalid inputs (400),
   non-admin (403) and no token (401), unknown id (404) and malformed id (400).
+
+## Step 18 — Config cleanups (from Step 10's backlog) ✅
+
+Two of the three items under Step 10's "Config cleanups" note.
+
+### What changed
+
+- **Dropped `ConfigModule.forRoot({ isGlobal: true })`** from all three
+  `AppModule`s (`apps/api`, `apps/notification-worker`, `apps/event-consumer`).
+  Nothing read `@nestjs/config`'s `ConfigService` anywhere (checked — only
+  doc-comment mentions of it remained, in `libs/config`, as a shape
+  comparison for `AppConfigService`); `@lib/config`'s `AppConfigModule` was
+  already doing the real work. Removed the now-unused `@nestjs/config`
+  dependency from `package.json` too (`npm uninstall`).
+- **`libs/common/src/observability.module.ts`** no longer reads raw
+  `process.env.NODE_ENV` in the two spots that picked pino's log level and
+  transport. It imports `environmentVariables` from `@lib/config` (the
+  already-parsed singleton `environment-variables.ts` exports) instead —
+  no DI conversion needed since this file reads the value directly inside a
+  static `@Module` decorator array, not through a constructor-injected
+  service. No circular import (`@lib/config` doesn't depend on `@lib/common`).
+- **Left alone:** splitting the env schema per app. Discussed with the user —
+  skipped for now since it's explicitly conditional on the apps ever being
+  deployed separately, which isn't the case today; doing it speculatively
+  risked a shape that would just be redone once there's a real deployment
+  split to design against.
+
+### Verified
+
+- `tsc --noEmit` clean.
+- 84 jest tests pass; 85 e2e tests pass against the real containers.
+- All three apps rebuilt (`npm run build:all`, webpack) and booted from the
+  built bundles — `/health` 200 on all three, no errors in the boot logs.
+  Confirmed both `NODE_ENV` branches still work: the plain boot (no
+  `NODE_ENV` set) showed pretty-printed (non-JSON) log lines as before: the
+  e2e run (`NODE_ENV=test`, jest-set) stayed silent as before.
+
+### Current environment state (as of pausing)
+
+- Containers unchanged and healthy. No app processes left running.
+- `package-lock.json` updated by the `@nestjs/config` removal.
 
 ## Gotchas hit and fixed along the way
 
@@ -1421,11 +1464,6 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
 
 **Open decisions and loose ends** (not blockers):
 
-- **A location's timezone can't be changed.** `PATCH /locations/:id` (Step 17)
-  edits only name and address, so a wrong timezone still means deleting and
-  recreating the location (fine while it has no reservations; `slots`
-  cascade, `reservations` do not). Allowing it would mean regenerating the
-  future slots, and deciding what happens to booked ones.
 - **Should closing off a slot-full confirm publish events?** Today (Step 13,
   finding 2) the reservation becomes `cancelled` with no `ReservationCancelled`
   event and no reason, because none of the existing reasons fit. If
@@ -1441,12 +1479,10 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
   analytics, audit or inventory-sync behind it.
 - **Swagger/OpenAPI docs**: none.
 - **Rate limiting** beyond DTO validation: none.
-- **Config cleanups** (Step 10, "Things worth knowing"): drop the now
-  redundant `ConfigModule.forRoot({ isGlobal: true })` from each `AppModule`
-  (and the `@nestjs/config` dependency with it), replace the raw
-  `process.env.NODE_ENV` reads in `libs/common/src/observability.module.ts`
-  with the typed config, and split the env schema per app if the apps are
-  ever deployed separately.
+- **Config cleanups** (Step 10, "Things worth knowing"): two of the three
+  done in Step 18 (dropped `ConfigModule.forRoot()`/`@nestjs/config`, typed
+  `NODE_ENV` reads). Splitting the env schema per app is still left, for if
+  the apps are ever deployed separately.
 
 All four infrastructure legs, the reservation lifecycle HTTP endpoints, the
 locations/slots surface, and JWT auth/authz with two roles are built, and the
