@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Swagger/OpenAPI docs (Step 19); real notifications on hold until a mail provider is chosen
+## Status: paused after Dockerfiles + CI (Step 20); real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `PLAN.md` "Decisions")
 
@@ -1438,6 +1438,9 @@ Resolves the "Swagger/OpenAPI docs: none" backlog item.
   field, overriding just the docs-generated pattern; the `@Matches`
   decorator (real, server-side validation) is untouched. The only other
   `@Matches` in the codebase; nowhere else to check for the same issue.
+  Added `example` values to `from`/`to` at the same time (full ISO 8601 UTC
+  instants, matching `@IsDateString` and the e2e suite's existing usage) --
+  they'd been left blank in `/docs`.
 
 ### Verified
 
@@ -1456,6 +1459,116 @@ Resolves the "Swagger/OpenAPI docs: none" backlog item.
 
 - Containers unchanged and healthy. No app processes left running.
 - `package-lock.json`/`package.json` updated by the `@nestjs/swagger` install.
+
+## Step 20 — Dockerfiles + CI ✅
+
+Resolves the "No CI/CD and no Dockerfiles" backlog item.
+
+### What changed
+
+- **`apps/{api,notification-worker,event-consumer}/Dockerfile`**, one per
+  app, each a two-stage `node:20-alpine` build: stage 1 (`npm ci`, copy the
+  repo, `nest build <app>`) produces `dist/apps/<app>/main.js`; stage 2 does
+  its own `npm ci --omit=dev` and copies in just that one file. **`nest
+  build` (webpack) externalizes `node_modules` rather than bundling them**
+  (this repo's Gotchas #1 already covers why webpack is used at all, but not
+  this side effect of it -- confirmed by checking the built bundle for
+  `require("@nestjs...")` calls), so the runtime stage genuinely needs its
+  own install, not just the one built file. Built from the repo root (one
+  shared `package.json`/`node_modules` for every app + lib in this
+  monorepo), e.g. `docker build -f apps/api/Dockerfile .`.
+- **Dependencies aren't split per app** (same caveat Step 10 already flagged
+  for the env schema) -- all three images install the full production
+  dependency set (`npm ci --omit=dev`, 759 packages, ~452MB image each) even
+  though, say, `event-consumer` never touches Redis or RabbitMQ. Splitting
+  this would need per-app `package.json`s, a bigger restructuring left for
+  if/when the apps are ever deployed separately.
+- **`.dockerignore`**: excludes `node_modules`, `dist`, `.env*` (keeps
+  `.env.example`), `.git`, `.vscode`, `coverage`, and `*.md`.
+- **`.github/workflows/ci.yml`**, two jobs, on push to `master` and on every
+  PR:
+  - `test`: brings up the same four services a developer runs locally
+    (`docker compose up -d --wait --wait-timeout 180` -- Compose v2.20+'s
+    `--wait` blocks until every healthcheck passes instead of just until
+    the containers start, confirmed locally: returns in ~7s once already
+    healthy, would block up to 180s cold), then `npx tsc --noEmit`, `npm
+    test`, `npm run test:e2e`. Mirrors Step 13's documented local workflow
+    exactly -- e2e runs through `ts-jest` against the real services, so
+    `npm run build:all` is never needed in this job.
+  - `docker-build`: matrix over the three apps, builds each image
+    (`docker/build-push-action@v6`, `push: false`) to confirm the
+    Dockerfiles keep working -- doesn't touch the four services.
+  - Does **not** run the app Docker images themselves against the compose
+    services (see below for why that specific combination doesn't work
+    here) -- both CI jobs test what's actually being shipped (the
+    Dockerfiles build; the app code passes its tests), just not "the built
+    image talking to the compose stack" as one combined check.
+- **Not done, on purpose (decided with the user before starting)**: the
+  three apps are not added as `docker-compose.yml` services. Verified why
+  that combination doesn't trivially work, below.
+- **Migrations are still a separate, manual step.** No Dockerfile or CI job
+  runs `npm run typeorm -- migration:run` against a deployed Postgres --
+  same as local dev today (Step 2's "Verified" section).
+
+### Things worth knowing
+
+- **Tried running the built `api` image against the compose services
+  directly (joined to the `phastos_reservation_default` network) to prove
+  the image boots end-to-end, not just builds.** Postgres, Redis and
+  RabbitMQ all connected fine (`TypeOrmModule`/`RedisModule`/
+  `RabbitmqModule dependencies initialized`), but Kafka failed
+  (`ECONNREFUSED` on `localhost:9092`). Cause: `docker-compose.yml`'s
+  `KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092` tells every
+  client "reconnect to `localhost:9092`" after the initial handshake --
+  correct when the client runs on the host itself (every existing verified
+  path: local dev, the e2e suite, this CI's `test` job), but from inside
+  *another* container, `localhost` is that container's own loopback, not
+  the Kafka container. Not a Dockerfile defect -- it's `docker-compose.yml`
+  having only ever been configured for host-based clients. Fixing it for
+  real container-to-container use would mean adding a second, network-
+  internal listener, which is exactly the scope the "Dockerfiles only, not
+  wired into compose" decision (made with the user before this step)
+  avoided taking on. Cleaned up the test container/images afterward.
+- **Image size (~452MB each)** is mostly the full production
+  `node_modules` (`pg`, `typeorm`, `kafkajs`, `amqplib`, `ioredis`, `pino`,
+  etc.) needed because webpack externalizes them and they aren't split per
+  app. Alpine + a slimmer, per-app dependency set could shrink this
+  meaningfully but wasn't attempted -- see the "dependencies aren't split
+  per app" note above.
+- `NODE_ENV=production` in the runtime stage means `pino-pretty` (a
+  `devDependency`, absent from `npm ci --omit=dev`) is never reached --
+  `observability.module.ts`'s transport branch already only uses it when
+  `NODE_ENV !== 'production'` (Step 18).
+- Picked Node 20 (the active LTS, matching `@types/node@^20` already in
+  `package.json`) over matching local dev's Node 23, which isn't an LTS
+  release.
+
+### Verified
+
+- All three images built successfully from a clean local Docker build
+  (`docker build -f apps/<app>/Dockerfile .`), each producing a working
+  `main.js` + a correctly populated production `node_modules`.
+- `docker compose up -d --wait --wait-timeout 60` against the already-
+  running, already-healthy stack returned in ~7s -- confirms the flag/
+  timeout behave as the CI job expects, on the Docker Compose version
+  installed here (`v2.32.4`, well past the `v2.20` minimum for `--wait`).
+- `.github/workflows/ci.yml` parsed as valid YAML.
+- The built `api` image's Postgres/Redis/RabbitMQ connections verified live
+  (see "Things worth knowing" above for the one that didn't, and why).
+- Full test suite still green after adding all of the above: `tsc --noEmit`
+  clean, 84 unit tests, 85 e2e tests against the real containers.
+- **Not verified**: an actual GitHub Actions run (nothing was pushed this
+  session) -- the `test` job's steps were each checked to either match an
+  already-proven local sequence (Step 13's "How to run") or were run
+  directly against Docker on this machine, but the workflow file itself
+  hasn't executed on a real runner yet.
+
+### Current environment state (as of pausing)
+
+- Containers unchanged and healthy. No app processes left running.
+- No leftover test images/containers from this step's verification.
+- Nothing pushed -- `.dockerignore`, the three `Dockerfile`s and
+  `.github/workflows/ci.yml` are new, uncommitted files.
 
 ## Gotchas hit and fixed along the way
 
@@ -1556,13 +1669,14 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: Dockerfiles and CI (real notifications on hold)
+## Next step: push and watch CI actually run (real notifications on hold)
 
 **Suggested order:**
 
-1. **Dockerfiles for the three apps and CI**, so CI has tests to run — the
-   e2e suite needs the four services, so CI would use the docker-compose
-   file (or service containers).
+1. **Push Step 20's Dockerfiles/CI workflow and watch it actually run on
+   GitHub Actions** — it's never executed on a real runner yet (see Step
+   20's "Verified" section). Fix whatever a real run turns up that local
+   verification couldn't catch.
 2. **Real notifications — ON HOLD until a mail provider is decided.** The
    payloads already carry the location's `timezone` (Step 15). Still to do:
    render emails in store-local time with `toSlotLocalTimes`, get the
@@ -1605,8 +1719,8 @@ reservation. What's left before this is a real system, beyond the list above:
   refuses to start if `JWT_SECRET` (or any other required variable) is
   missing, but it cannot tell a placeholder from a real secret, so a
   copied-over placeholder value still passes.
-- No CI/CD and no Dockerfiles for the three apps themselves (only their
-  infra dependencies run in docker-compose).
+- Dockerfiles and a CI workflow exist (Step 20), but the workflow has never
+  actually run on GitHub Actions -- nothing has been pushed yet.
 - Test coverage is the unit tests for the slot/local-time/reservation-view
   logic and `@lib/config`, plus the api e2e suite; there is still nothing for
   `notification-worker` or `event-consumer`.

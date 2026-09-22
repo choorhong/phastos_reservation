@@ -1,0 +1,15 @@
+# Rebuilt inside the image -- never sent as build context.
+node_modules
+dist
+
+# Local-only, never sent to the image (contains real secrets outside CI).
+.env
+.env.*
+!.env.example
+
+.git
+.vscode
+coverage
+
+# Doc/plan/log files -- not needed by the build, keeps the context small.
+*.md
