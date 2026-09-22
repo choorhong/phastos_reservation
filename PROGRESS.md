@@ -1426,6 +1426,18 @@ Resolves the "Swagger/OpenAPI docs: none" backlog item.
   -- string-literal unions aren't auto-detected as enums), the `Date | null`
   case above, and a few `example` values, not because the plugin needed
   them to find the fields at all.
+- **Found live in `/docs`, fixed same day**: `ListSlotsDto.date`'s
+  `@Matches(/^\d{4}-\d{2}-\d{2}$/)` regex got stringified straight into the
+  OpenAPI `pattern` keyword *with* its enclosing `/../` slashes
+  (`"/^\\d{4}-\\d{2}-\\d{2}$/"`), which `pattern` doesn't use. Swagger UI's
+  own client-side check then required a literal `/` in the input, so every
+  real date (`2026-09-22`) failed in "Try it out" before the request was
+  even sent -- the actual endpoint was never broken (`curl` with the same
+  value returned `200` throughout). Fixed with an explicit
+  `@ApiPropertyOptional({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })` on that one
+  field, overriding just the docs-generated pattern; the `@Matches`
+  decorator (real, server-side validation) is untouched. The only other
+  `@Matches` in the codebase; nowhere else to check for the same issue.
 
 ### Verified
 
