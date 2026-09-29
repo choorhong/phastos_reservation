@@ -16,7 +16,7 @@ export const rabbitmqConnectionProvider: Provider = {
     const user = config.get('RABBITMQ_USER');
     const password = config.get('RABBITMQ_PASSWORD');
     // amqp-connection-manager handles reconnect/backoff on its own, which is
-    // the reason it's used here instead of raw amqplib (PLAN.md §4: these
+    // the reason it's used here instead of raw amqplib (docs/architecture.md §4: these
     // queues sit in front of slow/unreliable third parties, so the broker
     // connection itself needs to be resilient too).
     return amqp.connect([`amqp://${user}:${password}@${host}:${port}`]);

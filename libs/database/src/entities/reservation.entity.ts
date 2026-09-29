@@ -69,7 +69,7 @@ export class Reservation {
   cancelReason?: ReservationCancelReason;
 
   /**
-   * Set by notification-worker's reminder sweep (PLAN.md "Decisions" #2)
+   * Set by notification-worker's reminder sweep (docs/architecture.md "Decisions" #2)
    * the moment it claims this reservation for a reminder send -- the guard
    * (`WHERE reminder_sent_at IS NULL`) that keeps concurrent sweep ticks
    * from enqueueing the same reminder twice.

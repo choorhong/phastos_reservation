@@ -4,7 +4,7 @@ import { AppConfigModule, AppConfigService } from '@lib/config';
 import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
 
 /**
- * Postgres is the source of truth (PLAN.md §1/§5). `synchronize: false`
+ * Postgres is the source of truth (docs/architecture.md §1/§5). `synchronize: false`
  * always -- schema changes go through migrations
  * (`npm run typeorm -- migration:run -d libs/database/src/data-source.ts`),
  * never auto-sync, so the `enforce_slot_capacity` trigger from the initial

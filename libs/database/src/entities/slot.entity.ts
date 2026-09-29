@@ -17,7 +17,7 @@ import { Reservation } from './reservation.entity';
  * number Postgres enforces against (see the `enforce_slot_capacity` trigger
  * added in the initial migration) and the number Redis's
  * `slot:{slotId}:available` counter is seeded from at cache-load time
- * (PLAN.md §2). Postgres is the source of truth for this value; Redis is a
+ * (docs/architecture.md §2). Postgres is the source of truth for this value; Redis is a
  * cache of it plus in-flight holds.
  *
  * `(locationId, startTime)` is UNIQUE so the slot generator can re-run

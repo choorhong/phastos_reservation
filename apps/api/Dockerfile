@@ -2,9 +2,9 @@
 # by all three apps' libs) -- e.g. `docker build -f apps/api/Dockerfile .`.
 #
 # `nest build` (webpack) externalizes node_modules rather than bundling them
-# (standard for a Nest CLI webpack build -- see PROGRESS.md's Gotchas #1),
+# (standard for a Nest CLI webpack build -- see docs/progress.md's Gotchas #1),
 # so the runtime stage needs its own `npm ci` too, not just the built
-# `main.js`. This doesn't run database migrations -- see PROGRESS.md's
+# `main.js`. This doesn't run database migrations -- see docs/progress.md's
 # Dockerfiles/CI notes for that still being a separate, manual step.
 
 FROM node:24-alpine AS build

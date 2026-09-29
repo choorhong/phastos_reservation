@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
- * Backs the reminder DB-scheduler-sweep design (PLAN.md "Decisions" #2):
+ * Backs the reminder DB-scheduler-sweep design (docs/architecture.md "Decisions" #2):
  * notification-worker periodically selects confirmed reservations whose
  * slot starts within the reminder lead window and `reminder_sent_at IS
  * NULL`, conditionally claims one with an `UPDATE ... WHERE reminder_sent_at

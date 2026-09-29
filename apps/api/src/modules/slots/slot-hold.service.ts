@@ -19,7 +19,7 @@ export interface SlotHold {
 
 /**
  * Claim/confirm/release lifecycle for a slot hold, backed by the three
- * atomic Lua scripts in `@lib/redis-scripts` (PLAN.md §2). Redis is a cache
+ * atomic Lua scripts in `@lib/redis-scripts` (docs/architecture.md §2). Redis is a cache
  * of Postgres-derived availability, not the source of truth: on a cache
  * miss (`SlotNotLoadedError` from the script) this service recomputes
  * `capacity - COUNT(confirmed)` from Postgres and seeds the cache with

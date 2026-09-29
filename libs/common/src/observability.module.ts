@@ -6,7 +6,7 @@ import { LoggerModule } from 'nestjs-pino';
 import type { IncomingMessage } from 'http';
 
 /**
- * Baseline observability wiring, present from project scaffold (see PLAN.md
+ * Baseline observability wiring, present from project scaffold (see docs/architecture.md
  * "Decisions" §3) rather than retrofitted later:
  *  - ClsModule gives every request a `correlationId` in async-local-storage,
  *    readable from anywhere in the request's call graph (service, Redis hold,

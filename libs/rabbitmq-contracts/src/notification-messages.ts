@@ -3,7 +3,7 @@ import type { Channel, ConfirmChannel } from 'amqplib';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 
 /**
- * The three notification task queues from PLAN.md §4 ("RabbitMQ vs Direct
+ * The three notification task queues from docs/architecture.md §4 ("RabbitMQ vs Direct
  * Calls"): slow/unreliable side effects that must never block the request
  * that triggered them, and need retry + DLQ instead of just failing once.
  */
@@ -55,7 +55,7 @@ export type NotificationMessage =
  * Header carrying the number of prior delivery attempts. The consumer reads
  * it, and on failure either republishes with it incremented (retry) or, once
  * it reaches MAX, nacks without requeue so the queue's own
- * x-dead-letter-exchange routes the message to its DLQ (PLAN.md §4: "after N
+ * x-dead-letter-exchange routes the message to its DLQ (docs/architecture.md §4: "after N
  * retries move to DLQ and alert rather than loop forever").
  */
 export const RETRY_COUNT_HEADER = 'x-retry-count';

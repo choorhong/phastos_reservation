@@ -3,7 +3,7 @@
 # `docker build -f apps/event-consumer/Dockerfile .`.
 #
 # `nest build` (webpack) externalizes node_modules rather than bundling them
-# (standard for a Nest CLI webpack build -- see PROGRESS.md's Gotchas #1),
+# (standard for a Nest CLI webpack build -- see docs/progress.md's Gotchas #1),
 # so the runtime stage needs its own `npm ci` too, not just the built
 # `main.js`.
 

@@ -9,8 +9,8 @@ import {
 import { RABBITMQ_CHANNEL } from '@app/api/modules/rabbitmq/rabbitmq-connection.provider';
 
 /**
- * Publishes the three notification task messages (PLAN.md §4). These are
- * "direct producer calls" in PLAN.md's terms -- called synchronously from
+ * Publishes the three notification task messages (docs/architecture.md §4). These are
+ * "direct producer calls" in docs/architecture.md's terms -- called synchronously from
  * within the request path but only to hand the message to RabbitMQ, not to
  * wait on delivery -- so the request is never blocked by SendGrid/SES or PDF
  * generation.

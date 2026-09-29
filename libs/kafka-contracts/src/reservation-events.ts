@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { Admin, Producer } from 'kafkajs';
 
 /**
- * Kafka event contracts for the `reservation-events` topic (see PLAN.md §3).
+ * Kafka event contracts for the `reservation-events` topic (see docs/architecture.md §3).
  *
  * Single topic, multiple event types, partitioned by `slotId` so that one
  * slot's lifecycle (Requested -> Confirmed/Cancelled -> SlotReleased) is
@@ -63,9 +63,9 @@ export const RESERVATION_EVENTS_TOPIC = 'reservation-events';
 
 /**
  * `partitions: 12` gives headroom to scale `event-consumer` instances
- * independently of Redis/Postgres sharding (PLAN.md §3).
+ * independently of Redis/Postgres sharding (docs/architecture.md §3).
  * `replicationFactor` is passed in rather than hardcoded -- 1 for a single
- * local broker, 3 in non-local envs, per PLAN.md §3.
+ * local broker, 3 in non-local envs, per docs/architecture.md §3.
  */
 export async function ensureReservationEventsTopic(
   admin: Admin,
@@ -84,7 +84,7 @@ export async function ensureReservationEventsTopic(
 /**
  * Envelopes and publishes one reservation lifecycle event, keyed by
  * `slotId` so all of one slot's events land in the same partition and are
- * consumed in order (PLAN.md §3). Shared by every producer (today: only
+ * consumed in order (docs/architecture.md §3). Shared by every producer (today: only
  * `apps/api`) so the envelope shape can't drift between call sites.
  */
 export async function publishReservationEvent<T extends ReservationEventType>(

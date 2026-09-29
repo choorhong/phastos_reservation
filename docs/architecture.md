@@ -57,7 +57,7 @@ phastos-reservation/
 │   └── common/                     # logging (pino), config module, tracing, health
 │
 ├── docker-compose.yml
-└── PLAN.md
+└── docs/architecture.md
 ```
 
 **Why not pure microservices (separate repos/deploys per bounded context)?**

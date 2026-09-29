@@ -17,7 +17,7 @@ const EXPIRED_HOLD_PATTERN = /^hold:\{([^}]+)\}:(.+)$/;
 const SWEEP_INTERVAL_NAME = 'slot-hold-reaper-sweep';
 
 /**
- * Returns capacity from expired-but-unconfirmed holds (PLAN.md §2). Two
+ * Returns capacity from expired-but-unconfirmed holds (docs/architecture.md §2). Two
  * layers, because relying on only one is fragile:
  *
  * 1. Keyspace notifications (fast path, near-real-time) -- subscribes to

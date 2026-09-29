@@ -1,6 +1,6 @@
 /**
  * Maps 1:1 to the `redis.error_reply(...)` strings the Lua scripts in
- * `@lib/redis-scripts` can return (PLAN.md §2). ioredis surfaces those as a
+ * `@lib/redis-scripts` can return (docs/architecture.md §2). ioredis surfaces those as a
  * `ReplyError` whose `.message` is exactly this string.
  */
 export class SlotNotLoadedError extends Error {

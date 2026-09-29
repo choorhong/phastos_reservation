@@ -2,7 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
  * Locations, slots, reservations, plus `enforce_slot_capacity`: a trigger
- * that is the hard backstop against overbooking (PLAN.md §2 "defense in
+ * that is the hard backstop against overbooking (docs/architecture.md §2 "defense in
  * depth"). Redis is the fast path that rejects most over-capacity claims
  * before they ever reach Postgres; this trigger is what makes it physically
  * impossible for `reservations` to hold more `confirmed` rows for a slot

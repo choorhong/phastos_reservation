@@ -2,7 +2,7 @@ import { CreateDateColumn, Entity, PrimaryColumn } from 'typeorm';
 
 /**
  * Idempotent-consumption ledger for Kafka `reservation-events` consumers
- * (PLAN.md §3). Composite primary key `(event_id, consumer_name)` rather
+ * (docs/architecture.md §3). Composite primary key `(event_id, consumer_name)` rather
  * than `event_id` alone: multiple downstream consumers (analytics, audit,
  * inventory-sync) each dedupe independently against the same eventId, so
  * one consumer having already processed an event must not block another.

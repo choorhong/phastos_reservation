@@ -16,7 +16,7 @@ interface EventContext {
 }
 
 /**
- * Publishes reservation lifecycle events to Kafka (PLAN.md §4: "Direct
+ * Publishes reservation lifecycle events to Kafka (docs/architecture.md §4: "Direct
  * producer call from within the request path" -- fire-and-forget to the
  * durable log, no retry policy needed beyond Kafka's own).
  */

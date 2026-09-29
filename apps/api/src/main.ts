@@ -13,7 +13,7 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   // /docs is unauthenticated, same as every GET endpoint it describes -- see
-  // PROGRESS.md's rate-limiting/auth backlog notes if that ever needs to
+  // docs/progress.md's rate-limiting/auth backlog notes if that ever needs to
   // change. Not wired into `app.setup.ts`/the e2e suite: it's static
   // documentation, not request handling, so there's nothing there worth
   // testing on every jest boot.

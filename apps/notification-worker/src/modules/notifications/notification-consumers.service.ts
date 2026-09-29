@@ -14,7 +14,7 @@ import {
 import { RABBITMQ_CHANNEL } from '@app/notification-worker/modules/rabbitmq/rabbitmq-connection.provider';
 
 /**
- * Consumes the three notification queues (PLAN.md §4). There's no real
+ * Consumes the three notification queues (docs/architecture.md §4). There's no real
  * SendGrid/SES/PDF integration yet -- each handler just validates the
  * payload shape and logs, standing in for the actual side effect. What this
  * service exists to get right at this stage is the retry/DLQ mechanics

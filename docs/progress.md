@@ -1,14 +1,14 @@
 # Progress Log
 
 Tracks what's actually been built, in what order, so this can be picked back
-up without re-deriving context. See `PLAN.md` for the architecture/design —
+up without re-deriving context. See `docs/architecture.md` for the architecture/design —
 this file is just the build log against that plan.
 
 ---
 
 ## Status: paused after Dockerfiles + CI (Step 20); real notifications on hold until a mail provider is chosen
 
-## Decisions locked in (see `PLAN.md` "Decisions")
+## Decisions locked in (see `docs/architecture.md` "Decisions")
 
 - ORM: **TypeORM**
 - Reminder scheduling: **DB scheduler sweep → RabbitMQ** (not the delayed-exchange plugin)
@@ -26,7 +26,7 @@ apps/api                  # HTTP API, port 3000 — the booking hot path
 apps/notification-worker  # RabbitMQ consumers, port 3001 (health-only stub so far)
 apps/event-consumer       # Kafka consumers, port 3002 (health-only stub so far)
 libs/domain                # plain shared TS types (ReservationStatus, etc.)
-libs/kafka-contracts       # reservation-events.ts — full envelope + payload types from PLAN.md §3
+libs/kafka-contracts       # reservation-events.ts — full envelope + payload types from docs/architecture.md §3
 libs/redis-scripts         # claim/confirm/release Lua scripts (inlined as TS template literals, not separate .lua files — see Gotchas) + attachHoldScripts()/slotKeys() helpers
 libs/database               # TypeORM entities/migrations/DataSource (built out in Step 2)
 libs/rabbitmq-contracts    # placeholder — filled in when RabbitMQ step happens
@@ -62,7 +62,7 @@ cancelled | expired`).
 UPDATE OF status` trigger on `reservations` that row-locks the slot
     (`SELECT ... FOR UPDATE`) and refuses to let a row become `confirmed`
     if that would exceed the slot's `capacity`. This is the DB-level
-    defense-in-depth from `PLAN.md` §2 — it holds even if Redis is
+    defense-in-depth from `docs/architecture.md` §2 — it holds even if Redis is
     bypassed, stale, or lost.
 - Wired `DatabaseModule` into `apps/api`'s `AppModule`.
 
@@ -121,7 +121,7 @@ All of the above passed at the time this was written.
   reaper's sweep can discover which slots to scan without relying on any one
   process's in-memory state (works across app restarts/instances). Deliberately
   kept out of the atomic Lua scripts, which must stay single-hash-tag for Redis
-  Cluster compatibility (PLAN.md §2) — populated instead as a best-effort
+  Cluster compatibility (docs/architecture.md §2) — populated instead as a best-effort
   separate `SADD` from `SlotHoldService.claim()`.
 - `apps/api/src/modules/redis/`:
   - `redis-client.provider.ts` — two ioredis clients: `REDIS_CLIENT` (general
@@ -140,7 +140,7 @@ All of the above passed at the time this was written.
     `err.message` (ioredis surfaces `redis.error_reply(...)` as a `ReplyError`
     whose message is that exact string).
   - `hold-reaper.service.ts` — `HoldReaperService`, the two-layer reaper from
-    PLAN.md §2: `PSUBSCRIBE __keyevent@*__:expired` (fast path) +
+    docs/architecture.md §2: `PSUBSCRIBE __keyevent@*__:expired` (fast path) +
     a `SchedulerRegistry`-registered interval reading `ACTIVE_SLOTS_KEY` →
     per-slot `ZRANGEBYSCORE pending -inf now` → reap anything whose `hold:*`
     key is already gone (backstop for notifications missed across a Redis
@@ -202,7 +202,7 @@ rows, `redis-cli FLUSHDB`).
 - `libs/rabbitmq-contracts/src/notification-messages.ts` (previously an
   empty placeholder):
   - Three queues (`confirmation-email`, `reminder`, `receipt`) per
-    PLAN.md §4, one `notifications` direct exchange + one
+    docs/architecture.md §4, one `notifications` direct exchange + one
     `notifications.dlx` DLX, each main queue's `x-dead-letter-exchange`
     pointing at the DLX with its own routing key so a dead-lettered
     message lands in that queue's own `*.dlq`, not a shared one.
@@ -294,12 +294,12 @@ All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
 
 - `docker-compose.yml`: added `kafka` (`confluentinc/cp-kafka:7.6.0`, KRaft
   mode, no Zookeeper) + `kafka-ui` (`provectuslabs/kafka-ui`, port 8080) per
-  PLAN.md §5. Healthcheck via `kafka-broker-api-versions`.
+  docs/architecture.md §5. Healthcheck via `kafka-broker-api-versions`.
 - `.env.example` / `.env`: added `KAFKA_BROKERS`, `KAFKA_CLIENT_ID`,
-  `KAFKA_TOPIC_REPLICATION_FACTOR` (1 locally, 3 in PLAN.md's non-local
+  `KAFKA_TOPIC_REPLICATION_FACTOR` (1 locally, 3 in docs/architecture.md's non-local
   guidance), `EVENT_CONSUMER_GROUP_ID`.
 - `libs/database`: new `ProcessedEvent` entity (`processed_events`,
-  composite PK `(event_id, consumer_name)` -- PLAN.md §3's
+  composite PK `(event_id, consumer_name)` -- docs/architecture.md §3's
   idempotent-consumption ledger; composite rather than `event_id` alone so
   multiple downstream consumers can dedupe independently against the same
   event) + migration `AddProcessedEvents`. Added to `DatabaseModule`'s
@@ -307,7 +307,7 @@ All test rows/messages cleaned up afterward (`DELETE` on seeded rows,
 - `libs/kafka-contracts/src/reservation-events.ts` (envelope + payload
   types already existed from Step 1; added the runtime pieces):
   - `ensureReservationEventsTopic(admin, replicationFactor)` -- idempotent
-    topic creation (`partitions: 12` per PLAN.md §3), run by both apps on
+    topic creation (`partitions: 12` per docs/architecture.md §3), run by both apps on
     startup, same "whichever comes up first wins" pattern as
     `assertNotificationsTopology`.
   - `publishReservationEvent(producer, eventType, {slotId, locationId,
@@ -383,7 +383,7 @@ All test rows cleaned up afterward (`DELETE FROM processed_events`).
 - Added `class-validator`/`class-transformer`; `main.ts` now installs a
   global `ValidationPipe({ whitelist: true, transform: true })`.
 - `apps/api/src/modules/reservations/` — new module tying together all
-  four infra legs per PLAN.md §4's direct-vs-queue split:
+  four infra legs per docs/architecture.md §4's direct-vs-queue split:
   - `dto/create-reservation.dto.ts` (`slotId` UUID, `userId` string),
     `dto/cancel-reservation.dto.ts` (optional `reason`, restricted to the
     two user-facing `ReservationCancelReason` values — `hold_expired` is
@@ -480,7 +480,7 @@ compose up -d`; data persisted in the named volumes).
   authorize between hold and confirm. `payment_failed` was removed from
   `ReservationCancelReason` (`libs/domain`) and
   `ReservationCancelledPayload.reason` (`libs/kafka-contracts`), and the
-  "Payment authorization" row was dropped from PLAN.md §4's table — it
+  "Payment authorization" row was dropped from docs/architecture.md §4's table — it
   never matched what this system actually does.
 - No `GET /reservations/:id` (or any read/list endpoint) yet — out of
   scope for this step, which was specifically "wire the write/lifecycle

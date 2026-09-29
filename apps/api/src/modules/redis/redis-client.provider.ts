@@ -20,7 +20,7 @@ export const redisClientProvider: Provider = {
 
 /**
  * A separate connection for keyspace-notification `SUBSCRIBE` (the hold
- * reaper's fast path, PLAN.md §2). ioredis puts a connection that issues
+ * reaper's fast path, docs/architecture.md §2). ioredis puts a connection that issues
  * SUBSCRIBE into a dedicated pub/sub mode where it can no longer run
  * ordinary commands, so it can't share a connection with REDIS_CLIENT.
  */

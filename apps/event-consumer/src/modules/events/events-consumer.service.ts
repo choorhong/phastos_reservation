@@ -10,7 +10,7 @@ import { KAFKA_CONSUMER } from '@app/event-consumer/modules/kafka/kafka-consumer
 const CONSUMER_NAME = 'event-consumer';
 
 /**
- * Consumes `reservation-events` (PLAN.md §3). There's no real
+ * Consumes `reservation-events` (docs/architecture.md §3). There's no real
  * analytics/audit/inventory-sync integration yet -- this stands in for all
  * three at once and just logs, the same scope boundary as
  * `NotificationConsumersService`'s stand-in send logic. What this exists to

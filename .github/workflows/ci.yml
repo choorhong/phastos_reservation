@@ -20,7 +20,7 @@ jobs:
       - run: npm ci
 
       # Same four services (Postgres/Redis/RabbitMQ/Kafka) a developer
-      # brings up locally -- see PROGRESS.md Step 13 "How to run". The e2e
+      # brings up locally -- see docs/progress.md Step 13 "How to run". The e2e
       # suite boots the real api app in-process (ts-jest, not the webpack
       # build) and drives it over HTTP against these, so nothing here needs
       # `npm run build:all` first.

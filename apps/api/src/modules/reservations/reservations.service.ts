@@ -32,7 +32,7 @@ function isActiveReservationConflict(err: unknown): boolean {
 /**
  * Ties the four independently-verified infrastructure legs (Redis hold,
  * Postgres row of record, Kafka lifecycle events, RabbitMQ notifications)
- * into the actual reservation lifecycle, per PLAN.md §4's direct-vs-queue
+ * into the actual reservation lifecycle, per docs/architecture.md §4's direct-vs-queue
  * split: the Redis/Postgres/Kafka calls are synchronous and gate the HTTP
  * response, the RabbitMQ enqueues are fire-and-forget side effects that
  * must never turn an otherwise-successful booking into an error response.

@@ -13,7 +13,7 @@ import { RABBITMQ_CHANNEL } from '@app/notification-worker/modules/rabbitmq/rabb
 const SWEEP_INTERVAL_NAME = 'reminder-sweep';
 
 /**
- * The DB-scheduler-sweep half of PLAN.md "Decisions" #2: periodically scans
+ * The DB-scheduler-sweep half of docs/architecture.md "Decisions" #2: periodically scans
  * `reservations` for confirmed rows whose slot starts within the reminder
  * lead window and enqueues each to RabbitMQ's `reminder` queue, instead of
  * using the `rabbitmq-delayed-message-exchange` plugin -- reminders are
