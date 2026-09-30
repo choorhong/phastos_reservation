@@ -14,7 +14,7 @@ import { AuthenticatedUser } from '@app/api/modules/auth/auth.types';
 import { EventsPublisherService } from '@app/api/modules/events/events-publisher.service';
 import { NotificationsPublisherService } from '@app/api/modules/notifications/notifications-publisher.service';
 import { HoldExpiredError, SlotSoldOutError } from '@app/api/modules/slots/slot-hold.errors';
-import { SlotHoldService } from '@app/api/modules/slots/slot-hold.service';
+import { SlotHold, SlotHoldService } from '@app/api/modules/slots/slot-hold.service';
 import { CancelReservationDto } from './dto/cancel-reservation.dto';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { ListReservationsDto } from './dto/list-reservations.dto';
@@ -69,7 +69,7 @@ export class ReservationsService {
       throw new ConflictException(`You already have a reservation for slot ${slot.id}`);
     }
 
-    let hold;
+    let hold: SlotHold;
     try {
       hold = await this.slotHoldService.claim(dto.slotId, userId);
     } catch (err) {
