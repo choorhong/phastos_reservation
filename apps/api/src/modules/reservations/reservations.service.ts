@@ -184,7 +184,7 @@ export class ReservationsService {
     try {
       await this.reservations.save(reservation);
     } catch (err) {
-      throw await this.rejectConfirmIfSlotFull(err, reservation);
+      throw await this.rejectConfirmIfSlotFull(err, reservation, correlationId);
     }
 
     const slot = reservation.slot;
@@ -296,21 +296,49 @@ export class ReservationsService {
    * never be confirmed, so it is cancelled instead of being left `held`
    * (nothing would ever clean it up: its Redis hold is already consumed), and
    * the caller gets a 409 rather than a bare 500. Any other error is passed on.
+   *
+   * Publishes `ReservationCancelled` (reason `slot_full`) so consumers see the
+   * lifecycle end, but no `SlotReleased`: no capacity comes back, since
+   * Postgres never counted this reservation and the stale Redis counter is
+   * deliberately left alone.
    */
-  private async rejectConfirmIfSlotFull(err: unknown, reservation: Reservation): Promise<unknown> {
+  private async rejectConfirmIfSlotFull(
+    err: unknown,
+    reservation: Reservation,
+    correlationId: string,
+  ): Promise<unknown> {
     if (!(err instanceof QueryFailedError) || !err.message.includes('SLOT_CAPACITY_EXCEEDED')) {
       return err;
     }
     // A targeted update: the in-memory entity still carries the confirmedAt
     // set above, which must not reach the row.
+    const cancelledAt = new Date();
     await this.reservations.update(
       { id: reservation.id },
-      { status: 'cancelled', cancelledAt: new Date() },
+      { status: 'cancelled', cancelledAt, cancelReason: 'slot_full' },
     );
     this.logger.warn(
       { reservationId: reservation.id, slotId: reservation.slotId },
       'reservation.confirm_rejected_slot_full',
     );
+
+    try {
+      await this.events.publishReservationCancelled(
+        { slotId: reservation.slotId, locationId: reservation.slot.locationId, correlationId },
+        {
+          reservationId: reservation.id,
+          userId: reservation.userId,
+          cancelledAt: cancelledAt.toISOString(),
+          reason: 'slot_full',
+        },
+      );
+    } catch (publishErr) {
+      this.logger.warn(
+        { err: publishErr, reservationId: reservation.id },
+        'reservation.cancelled_event_publish_failed',
+      );
+    }
+
     return new ConflictException(`Slot ${reservation.slotId} is already full`);
   }
 

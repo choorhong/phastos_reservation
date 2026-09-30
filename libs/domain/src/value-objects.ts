@@ -12,7 +12,8 @@ export interface TimeRange {
 
 export type ReservationStatus = 'held' | 'confirmed' | 'cancelled' | 'expired';
 
-export type ReservationCancelReason = 'user_cancelled' | 'hold_expired' | 'admin_cancelled';
+export type ReservationCancelReason =
+  'user_cancelled' | 'hold_expired' | 'admin_cancelled' | 'slot_full';
 
 export type SlotReleaseReason = 'cancellation' | 'hold_expired' | 'capacity_adjustment';
 

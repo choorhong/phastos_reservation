@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 21 (worker/consumer unit tests, Node 24, docs reorg); next up is publishing `ReservationCancelled` for slot-full confirms; real notifications on hold until a mail provider is chosen
+## Status: paused after Step 22 (`ReservationCancelled` for slot-full confirms); next up is an audit log in `event-consumer`; real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -1085,7 +1085,8 @@ E2E_LOGS=1 npm run test:e2e   # same, with the app's logs switched back on
    `409 Slot … is already full` and closes the reservation off as
    `cancelled` (its Redis hold is already consumed, so nothing would ever
    clean up a `held` row) instead of leaving it dangling. No events are
-   published for that cancellation, and the Redis counter is left alone
+   published for that cancellation (**changed in Step 22**: it now gets
+   `cancelReason: 'slot_full'` and a `ReservationCancelled` event), and the Redis counter is left alone
    (it was stale-high, so it is already wrong in the safe direction).
    Writing the test caught a bug in the first version of this fix: saving the
    entity again wrote its in-memory `confirmedAt` into the cancelled row; it
@@ -1606,6 +1607,50 @@ Small follow-ups after Step 20, one commit each.
 - `60c6ea4` and `203199a` are local only. Local `master` has no upstream
   tracking branch set.
 
+## Step 22 — `ReservationCancelled` for slot-full confirms ✅
+
+Closes the open decision from Step 13, finding 2: a confirm refused by the
+Postgres capacity trigger cancelled the reservation with no reason and no
+event, so the Kafka stream showed `ReservationRequested` with nothing after
+it.
+
+### What changed
+
+- **New cancel reason `slot_full`** in `ReservationCancelReason`
+  (`@lib/domain`), `ReservationCancelledPayload.reason`
+  (`@lib/kafka-contracts`), the Swagger enum in `reservation-view.ts`, and
+  the schema in `docs/architecture.md` §3. Not accepted from clients:
+  `CancelReservationDto` still only allows `user_cancelled`/`admin_cancelled`.
+  No migration: `cancel_reason` is a plain `VARCHAR`.
+- **`ReservationsService.rejectConfirmIfSlotFull`** now sets
+  `cancelReason: 'slot_full'` in its targeted update and publishes
+  `ReservationCancelled` (reason `slot_full`). A publish failure is logged
+  (`reservation.cancelled_event_publish_failed`) and never changes the 409,
+  same as the other lifecycle events.
+
+### Things worth knowing
+
+- **No `SlotReleased` on this path, on purpose.** No capacity comes back:
+  Postgres never counted the reservation, and the stale-high Redis counter
+  is still left alone (Step 13, finding 2).
+- **Only reachable when Redis is wrong.** The Redis claim normally gates
+  availability atomically, so a hold that succeeded always fits at confirm.
+  This path fires only if the Redis counter is stale or lost; the trigger is
+  the backstop against overbooking.
+
+### Verified
+
+- `tsc --noEmit` clean; `npm test`: 95 unit tests passing.
+- `npm run test:e2e` against the real containers: 85 tests passing. The
+  stale-Redis test (`never confirms more than the capacity when the Redis
+  counter is stale, and says 409`) now also checks `cancelReason:
+  'slot_full'`, exactly one `ReservationCancelled` with reason `slot_full`,
+  and no `SlotReleased`.
+
+### Current environment state (as of pausing)
+
+- Containers up and healthy. No app processes left running.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1705,25 +1750,18 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: publish `ReservationCancelled` for slot-full confirms (real notifications on hold)
+## Next step: an audit log in `event-consumer` (real notifications on hold)
 
 **Suggested order:**
 
 1. **Check the CI run for `5fa18d3` on GitHub Actions**, then push the
    local-only commits (Step 21's "Current environment state"). Fix whatever
    a real runner turns up that local verification couldn't catch.
-2. **Publish `ReservationCancelled` when a confirm finds the slot full.**
-   Today (Step 13, finding 2) the reservation becomes `cancelled` with no
-   event, so the Kafka stream shows `ReservationRequested` with no terminal
-   event for it. Every future consumer builds on that stream, so close the
-   gap first: add a reason (e.g. `'slot_full'`) to `ReservationCancelled`'s
-   `reason` union in `libs/kafka-contracts`, publish on that path, and cover
-   it in the e2e suite.
-3. **Give `event-consumer` a real job: an audit log.** A
+2. **Give `event-consumer` a real job: an audit log.** A
    `reservation_audit` table with one row per event, queryable by slot or
    user. Builds on the existing dedupe, needs no external service, and
    exercises the `slotId` partitioning/ordering for real.
-4. **Real notifications — ON HOLD until a mail provider is decided.** The
+3. **Real notifications — ON HOLD until a mail provider is decided.** The
    payloads already carry the location's `timezone` (Step 15). Still to do:
    render emails in store-local time with `toSlotLocalTimes`, get the
    recipient's email address (the payloads only have `userId`; leaning
@@ -1737,7 +1775,7 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
   it validates the payload and logs `notification.delivered`, so "confirmation
   email" and "reminder" send nothing. Blocked on choosing a provider (see the
   on-hold item above); the timezone half is done (Step 15).
-- **`event-consumer` is a stub** (see item 3 above): it dedupes and logs, with no real
+- **`event-consumer` is a stub** (see item 2 above): it dedupes and logs, with no real
   analytics, audit or inventory-sync behind it.
 - **Rate limiting** beyond DTO validation: none.
 - **Config cleanups** (Step 10, "Things worth knowing"): two of the three

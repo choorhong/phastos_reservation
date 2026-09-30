@@ -596,8 +596,20 @@ describe('reservations (e2e)', () => {
 
       // Bob's reservation is closed off, not left dangling as `held`.
       const bobReservation = await getReservation(app, bob, bobHold.body.id).expect(200);
-      expect(bobReservation.body).toMatchObject({ status: 'cancelled', confirmedAt: null });
+      expect(bobReservation.body).toMatchObject({
+        status: 'cancelled',
+        cancelReason: 'slot_full',
+        confirmedAt: null,
+      });
       expect(await countRows(slot.id, 'held')).toBe(0);
+
+      // Consumers see Bob's lifecycle end, but no capacity is released.
+      expect(eventSpies.cancelled).toHaveBeenCalledTimes(1);
+      expect(eventSpies.cancelled).toHaveBeenCalledWith(
+        expect.objectContaining({ slotId: slot.id }),
+        expect.objectContaining({ reservationId: bobHold.body.id, reason: 'slot_full' }),
+      );
+      expect(eventSpies.released).not.toHaveBeenCalled();
     });
   });
 });

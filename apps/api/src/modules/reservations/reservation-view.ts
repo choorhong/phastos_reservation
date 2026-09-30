@@ -8,6 +8,7 @@ const RESERVATION_CANCEL_REASONS: ReservationCancelReason[] = [
   'user_cancelled',
   'hold_expired',
   'admin_cancelled',
+  'slot_full',
 ];
 
 /** The slot half of a `ReservationView`: its UTC instants plus the location's own clock. */
