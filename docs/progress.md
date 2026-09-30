@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Dockerfiles + CI (Step 20); real notifications on hold until a mail provider is chosen
+## Status: paused after Step 21 (worker/consumer unit tests, Node 24, docs reorg); next up is publishing `ReservationCancelled` for slot-full confirms; real notifications on hold until a mail provider is chosen
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -1570,6 +1570,42 @@ Resolves the "No CI/CD and no Dockerfiles" backlog item.
 - Nothing pushed -- `.dockerignore`, the three `Dockerfile`s and
   `.github/workflows/ci.yml` are new, uncommitted files.
 
+## Step 21 — Unit tests for `notification-worker`/`event-consumer`, Node 24, docs reorg ✅
+
+Small follow-ups after Step 20, one commit each.
+
+### What changed
+
+- **Unit tests for the two apps that had none** (`4f51aed`):
+  `notification-consumers.service.spec.ts` (retry/DLQ header logic),
+  `reminder-sweep.service.spec.ts` (the claim-then-publish race guard) and
+  `events-consumer.service.spec.ts` (the `ON CONFLICT DO NOTHING RETURNING`
+  dedupe path). Closes the "nothing for `notification-worker` or
+  `event-consumer`" gap.
+- **Node 20 → 24** in all three Dockerfiles (`node:24-alpine`) and CI's
+  `node-version` (`5fa18d3`). Node 20 reached end-of-life; 24 is the Active
+  LTS. Supersedes Step 20's "Picked Node 20" note.
+- **Docs moved into `docs/`** (`60c6ea4`): `PLAN.md` → `docs/architecture.md`,
+  `PROGRESS.md` → `docs/progress.md`, plus `docs/kafka.md` and
+  `docs/redis.md`. References in code comments, Dockerfiles and CI updated.
+  New root `README.md` with an overview, run/test commands and doc links.
+- **Typed the slot hold** in `ReservationsService.create` (`let hold:
+  SlotHold`, was an implicit `any`) (`203199a`).
+
+### Verified
+
+- `npm test`: 9 suites, 95 unit tests, all passing (up from 84 in Step 20).
+- e2e not re-run for this step; none of the changes touch the api's runtime
+  behaviour beyond a type annotation.
+
+### Current environment state (as of pausing)
+
+- `origin/master` is at `5fa18d3`, so the Dockerfiles/CI workflow have been
+  pushed and should have triggered a GitHub Actions run, but its result
+  hasn't been checked yet (the `gh` CLI isn't installed locally).
+- `60c6ea4` and `203199a` are local only. Local `master` has no upstream
+  tracking branch set.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1669,15 +1705,25 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: push and watch CI actually run (real notifications on hold)
+## Next step: publish `ReservationCancelled` for slot-full confirms (real notifications on hold)
 
 **Suggested order:**
 
-1. **Push Step 20's Dockerfiles/CI workflow and watch it actually run on
-   GitHub Actions** — it's never executed on a real runner yet (see Step
-   20's "Verified" section). Fix whatever a real run turns up that local
-   verification couldn't catch.
-2. **Real notifications — ON HOLD until a mail provider is decided.** The
+1. **Check the CI run for `5fa18d3` on GitHub Actions**, then push the
+   local-only commits (Step 21's "Current environment state"). Fix whatever
+   a real runner turns up that local verification couldn't catch.
+2. **Publish `ReservationCancelled` when a confirm finds the slot full.**
+   Today (Step 13, finding 2) the reservation becomes `cancelled` with no
+   event, so the Kafka stream shows `ReservationRequested` with no terminal
+   event for it. Every future consumer builds on that stream, so close the
+   gap first: add a reason (e.g. `'slot_full'`) to `ReservationCancelled`'s
+   `reason` union in `libs/kafka-contracts`, publish on that path, and cover
+   it in the e2e suite.
+3. **Give `event-consumer` a real job: an audit log.** A
+   `reservation_audit` table with one row per event, queryable by slot or
+   user. Builds on the existing dedupe, needs no external service, and
+   exercises the `slotId` partitioning/ordering for real.
+4. **Real notifications — ON HOLD until a mail provider is decided.** The
    payloads already carry the location's `timezone` (Step 15). Still to do:
    render emails in store-local time with `toSlotLocalTimes`, get the
    recipient's email address (the payloads only have `userId`; leaning
@@ -1685,20 +1731,13 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    putting the address on the queue), and pick a provider (SendGrid/SES, or
    Mailpit locally to see real emails first).
 
-**Open decisions and loose ends** (not blockers):
-
-- **Should closing off a slot-full confirm publish events?** Today (Step 13,
-  finding 2) the reservation becomes `cancelled` with no `ReservationCancelled`
-  event and no reason, because none of the existing reasons fit. If
-  downstream consumers should see it, add a reason and publish.
-
 **Can wait** (none of these block the work above):
 
 - **Real email integration** in `notification-worker` (SendGrid/SES). Today
   it validates the payload and logs `notification.delivered`, so "confirmation
   email" and "reminder" send nothing. Blocked on choosing a provider (see the
   on-hold item above); the timezone half is done (Step 15).
-- **`event-consumer` is a stub**: it dedupes and logs, with no real
+- **`event-consumer` is a stub** (see item 3 above): it dedupes and logs, with no real
   analytics, audit or inventory-sync behind it.
 - **Rate limiting** beyond DTO validation: none.
 - **Config cleanups** (Step 10, "Things worth knowing"): two of the three
@@ -1719,11 +1758,12 @@ reservation. What's left before this is a real system, beyond the list above:
   refuses to start if `JWT_SECRET` (or any other required variable) is
   missing, but it cannot tell a placeholder from a real secret, so a
   copied-over placeholder value still passes.
-- Dockerfiles and a CI workflow exist (Step 20), but the workflow has never
-  actually run on GitHub Actions -- nothing has been pushed yet.
+- Dockerfiles and a CI workflow exist (Step 20) and have been pushed, but
+  the result of a real GitHub Actions run hasn't been checked yet.
 - Test coverage is the unit tests for the slot/local-time/reservation-view
-  logic and `@lib/config`, plus the api e2e suite; there is still nothing for
-  `notification-worker` or `event-consumer`.
+  logic, `@lib/config`, `notification-worker` (retry/DLQ, reminder sweep) and
+  `event-consumer` (dedupe), plus the api e2e suite. There is no e2e suite
+  for `notification-worker` or `event-consumer`.
 
 Solid and verified end-to-end:
 
