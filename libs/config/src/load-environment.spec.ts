@@ -152,10 +152,10 @@ describe('loadEnvironment', () => {
       expect(() => loadEnvironment(everyVariable)).not.toThrow();
     });
 
-    it('requires everything except ADMIN_EMAIL, ADMIN_PASSWORD and NODE_ENV', () => {
+    it('requires everything except ADMIN_EMAIL, ADMIN_PASSWORD, EMAIL_REDIRECT_TO and NODE_ENV', () => {
       expect(() => loadEnvironment({})).toThrow(/Missing required environment variable\(s\)/);
 
-      const optional = ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'NODE_ENV'];
+      const optional = ['ADMIN_EMAIL', 'ADMIN_PASSWORD', 'EMAIL_REDIRECT_TO', 'NODE_ENV'];
       const required = Object.keys(environmentSchema).filter((name) => !optional.includes(name));
       let message = '';
       try {

@@ -12,13 +12,13 @@ import {
   RETRY_COUNT_HEADER,
 } from '@lib/rabbitmq-contracts';
 import { RABBITMQ_CHANNEL } from '@app/notification-worker/modules/rabbitmq/rabbitmq-connection.provider';
+import { NotificationSenderService } from './notification-sender.service';
 
 /**
- * Consumes the three notification queues (docs/architecture.md §4). There's no real
- * SendGrid/SES/PDF integration yet -- each handler just validates the
- * payload shape and logs, standing in for the actual side effect. What this
- * service exists to get right at this stage is the retry/DLQ mechanics
- * around it: on a processing failure, retry up to NOTIFICATION_MAX_RETRIES
+ * Consumes the three notification queues (docs/architecture.md §4): each
+ * message is validated, then sent as an email via Resend
+ * (`NotificationSenderService`). Around that, the retry/DLQ mechanics: on a
+ * processing failure (malformed payload, unknown user, Resend error), retry up to NOTIFICATION_MAX_RETRIES
  * times by republishing with an incremented `x-retry-count` header, then
  * nack-without-requeue so the queue's own `x-dead-letter-exchange` routes
  * the message to its DLQ -- "after N retries move to DLQ and alert rather
@@ -31,6 +31,7 @@ export class NotificationConsumersService implements OnModuleInit {
   constructor(
     @Inject(RABBITMQ_CHANNEL) private readonly channel: ChannelWrapper,
     private readonly config: AppConfigService,
+    private readonly sender: NotificationSenderService,
     private readonly logger: Logger,
   ) {
     this.maxRetries = this.config.get('NOTIFICATION_MAX_RETRIES');
@@ -51,10 +52,11 @@ export class NotificationConsumersService implements OnModuleInit {
 
     try {
       const envelope = JSON.parse(msg.content.toString('utf8')) as NotificationMessage;
-      processMessage(envelope);
+      validateMessage(envelope);
+      const emailId = await this.sender.send(envelope);
       this.channel.ack(msg);
       this.logger.log(
-        { queue, messageId: envelope.messageId, correlationId: envelope.correlationId },
+        { queue, messageId: envelope.messageId, correlationId: envelope.correlationId, emailId },
         'notification.delivered',
       );
     } catch (err) {
@@ -98,11 +100,10 @@ export class NotificationConsumersService implements OnModuleInit {
 }
 
 /**
- * Stand-in for the real per-queue side effect (send email, enqueue PDF
- * render, etc.) -- not built yet. Throws on a structurally invalid envelope
- * so the retry/DLQ path above has a real failure mode to exercise.
+ * Throws on a structurally invalid envelope before anything is looked up
+ * or sent -- it goes down the same retry/DLQ path as a send failure.
  */
-function processMessage(envelope: NotificationMessage): void {
+function validateMessage(envelope: NotificationMessage): void {
   if (!envelope.payload || !envelope.payload.reservationId || !envelope.payload.userId) {
     throw new Error(`Malformed ${envelope.queue} payload: missing reservationId/userId`);
   }

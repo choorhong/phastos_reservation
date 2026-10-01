@@ -25,17 +25,19 @@ const validEnvelope = {
   payload: { reservationId: 'r1', userId: 'u1' },
 };
 
-// Missing `reservationId` -- the one failure mode processMessage() actually checks for.
+// Missing `reservationId` -- the one failure mode validateMessage() actually checks for.
 const malformedEnvelope = { ...validEnvelope, payload: { userId: 'u1' } };
 
 describe('NotificationConsumersService retry/DLQ policy', () => {
   const channel = { consume: jest.fn(), ack: jest.fn(), nack: jest.fn(), publish: jest.fn() };
   // NOTIFICATION_MAX_RETRIES read once in the constructor -- set before it runs, below.
   const config = { get: jest.fn().mockReturnValue(3) };
+  const sender = { send: jest.fn() };
   const logger = { log: jest.fn(), warn: jest.fn() };
   const service = new NotificationConsumersService(
     channel as never,
     config as never,
+    sender as never,
     logger as never,
   );
 
@@ -49,12 +51,14 @@ describe('NotificationConsumersService retry/DLQ policy', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     channel.publish.mockResolvedValue(undefined);
+    sender.send.mockResolvedValue('email-1');
   });
 
-  it('acks and logs a well-formed message', async () => {
+  it('sends, acks and logs a well-formed message', async () => {
     const msg = consumeMessage(validEnvelope);
     await handleMessage('confirmation-email', msg);
 
+    expect(sender.send).toHaveBeenCalledWith(validEnvelope);
     expect(channel.ack).toHaveBeenCalledWith(msg);
     expect(channel.nack).not.toHaveBeenCalled();
     expect(channel.publish).not.toHaveBeenCalled();
@@ -63,9 +67,33 @@ describe('NotificationConsumersService retry/DLQ policy', () => {
         queue: 'confirmation-email',
         messageId: 'm1',
         correlationId: 'c1',
+        emailId: 'email-1',
       }),
       'notification.delivered',
     );
+  });
+
+  it('retries when the email send fails', async () => {
+    sender.send.mockRejectedValue(new Error('Resend send failed'));
+    const msg = consumeMessage(validEnvelope);
+    await handleMessage('confirmation-email', msg);
+
+    expect(channel.ack).toHaveBeenCalledWith(msg);
+    expect(channel.publish).toHaveBeenCalledWith(
+      NOTIFICATIONS_EXCHANGE,
+      'confirmation-email',
+      msg.content,
+      expect.objectContaining({ headers: expect.objectContaining({ [RETRY_COUNT_HEADER]: 1 }) }),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'Resend send failed' }),
+      'notification.retry_scheduled',
+    );
+  });
+
+  it('does not send a malformed message', async () => {
+    await handleMessage('confirmation-email', consumeMessage(malformedEnvelope));
+    expect(sender.send).not.toHaveBeenCalled();
   });
 
   it('retries a malformed message by republishing with an incremented retry header, and acks the original delivery', async () => {

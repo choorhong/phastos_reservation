@@ -24,6 +24,8 @@ interface EnvironmentVariableSpec {
  *  - `ADMIN_EMAIL`/`ADMIN_PASSWORD`: unset on purpose means "skip admin
  *    bootstrap" (see `AdminBootstrapService`), so they must NOT get a
  *    default value baked in.
+ *  - `EMAIL_REDIRECT_TO`: dev-only; unset means "send to the real
+ *    recipient" (see `EmailService`), which is what production must do.
  *  - `NODE_ENV`: whatever the host process sets it to, or unset.
  */
 export const environmentSchema = {
@@ -50,6 +52,11 @@ export const environmentSchema = {
   // Reminder sweep (notification-worker)
   REMINDER_LEAD_MINUTES: { type: 'number' },
   REMINDER_SWEEP_INTERVAL_MS: { type: 'number' },
+
+  // Email delivery (notification-worker, via Resend)
+  RESEND_API_KEY: { type: 'string' },
+  EMAIL_FROM: { type: 'string' },
+  EMAIL_REDIRECT_TO: { type: 'string', optional: true },
 
   // Slot generation (apps/api/src/modules/slots): the one global rule slots
   // are generated from. Hours are wall-clock in each location's own timezone;
