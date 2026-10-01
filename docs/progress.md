@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 22 (`ReservationCancelled` for slot-full confirms); next up is an audit log in `event-consumer`; real notifications on hold until a mail provider is chosen
+## Status: paused after Step 23 (real notification emails via Resend); next up is an audit log in `event-consumer`
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -897,12 +897,11 @@ reservation endpoints (Step 12) now do this. Still to do:
 
 - ~~**RabbitMQ payloads**~~ — done in Step 15: both payloads now carry
   `timezone`.
-- **Real email rendering** (`notification-worker`, not built — consumers
-  only log today): render the time in the location's timezone with the
-  zone named ("Mon 21 Sep, 10:00 AM–12:00 PM SGT"), using `@lib/time`
-  (importable from `notification-worker` now). Users have no timezone of
-  their own, so store-local time is the right default; a second line in
-  the viewer's zone would need a user timezone first.
+- ~~**Real email rendering**~~ — done in Step 23: emails show store-local
+  time via `toSlotLocalTimes`, with the IANA zone named
+  ("2026-10-02, 10:00–12:00 (America/Los_Angeles)"). Users still have no
+  timezone of their own, so a second line in the viewer's zone would need
+  one first.
 - **Kafka events** (`libs/kafka-contracts`, `ReservationConfirmedPayload`):
   `slotStartTime`/`slotEndTime` as ISO UTC is right for machine consumers,
   so leave them. If a consumer ever needs local time it has `locationId` in
@@ -1651,6 +1650,114 @@ it.
 
 - Containers up and healthy. No app processes left running.
 
+## Step 23 — Real notification emails via Resend ✅
+
+Ends the "on hold until a mail provider is decided" item: the provider is
+**Resend**. All three notification queues (`confirmation-email`,
+`reminder`, `receipt`) now send a real email instead of only logging.
+
+### What changed
+
+- **`resend` dependency** (`^6.31.0`) and two new required env vars in
+  `@lib/config`: `RESEND_API_KEY` and `EMAIL_FROM`. Added to `.env.example`
+  with placeholders (`re_replace_me`, `Phastos <onboarding@resend.dev>`),
+  so CI's `cp .env.example .env` still boots.
+- **`EmailModule`/`EmailService`**
+  (`apps/notification-worker/src/modules/email`): the only code that talks
+  to Resend. Resend's SDK returns `{ error }` instead of throwing, so the
+  service turns an error into a throw, which the consumer's retry/DLQ path
+  then handles.
+- **`NotificationSenderService`** (`modules/notifications`): looks the
+  recipient up in Postgres by `userId` and loads the reservation with
+  `slot.location` by `reservationId`, renders the email for the queue, and
+  sends it. The booking details come from that reservation, not the
+  payload: payloads don't carry the location's address, and the receipt
+  payload has no slot or location at all. Payloads are unchanged.
+- **`notification-emails.ts`**: pure renderers (subject, text and HTML) for
+  the three emails, with all times on the location's clock. Each email is
+  an intro line, then `Reservation ID`, `Location`, `Address` and
+  `Date/Time` (local date, start–end, IANA zone). The receipt adds
+  `Confirmed at` last. The location
+  name is HTML-escaped in the HTML body.
+- **`EMAIL_REDIRECT_TO`** (optional, dev only): when set, `EmailService`
+  sends every email to that one address instead, with `[Phastos]`
+  prefixed to the subject and the intended recipient named in the first
+  line of the body. The worker logs `email.redirect_enabled` (warn) on startup
+  while it's on. Left commented out in `.env.example`; the local `.env`
+  sets it to the Resend account owner's address.
+- **`NotificationConsumersService`**: `processMessage` (validate, then only
+  log) became `validateMessage`, followed by `sender.send(envelope)`.
+  `notification.delivered` now logs Resend's `emailId`.
+
+### Things worth knowing
+
+- **The address is looked up, not put on the queue.** Email addresses never
+  sit in RabbitMQ or its DLQs, and a changed address applies to any send
+  that hasn't happened yet. An unknown user (or, for a receipt, an unknown
+  reservation) throws, so the message retries and then dead-letters.
+- **Idempotent retries.** The envelope's `messageId` is sent as Resend's
+  `Idempotency-Key`. A retry republishes the same envelope, so if a send
+  succeeded but the RabbitMQ ack didn't, Resend answers from the first send
+  instead of mailing the user twice. Resend only keeps keys for 24h.
+- **`onboarding@resend.dev` only delivers to the Resend account owner's
+  address.** Anything else is refused with `validation_error` ("You can
+  only send testing emails to your own email address") and dead-letters.
+  To email real users: verify a domain at resend.com/domains and point
+  `EMAIL_FROM` at it. Until then, `EMAIL_REDIRECT_TO` is how to read the
+  emails for any test user. `.local` domains (e.g. `phastos.local`) can never
+  be verified, since they can't have public DNS records.
+- **The local API key is send-only** (`restricted_api_key`). That is all
+  the worker needs; it can't list domains or read anything back.
+- **The schema is shared**, so `api` and `event-consumer` also refuse to
+  start without `RESEND_API_KEY`/`EMAIL_FROM`, even though they don't use
+  them. That's one more reason to split the env schema per app (Step 10's
+  backlog).
+- **Confirming a reservation sends two emails** (confirmation and receipt),
+  because the api publishes to both queues on confirm. That isn't new; it's
+  only visible now that the emails are real.
+
+### Verified
+
+- `tsc --noEmit` clean; `npm test`: 11 suites, 104 unit tests passing (up
+  from 95). New: `notification-emails.spec.ts` (store-local times for all
+  three emails, HTML escaping); `email.service.spec.ts` (Resend call and
+  idempotency key, the redirect, Resend errors turned into throws);
+  `notification-consumers.service.spec.ts`
+  now also covers a failed send scheduling a retry, and a malformed message
+  never reaching the sender.
+- `nest build notification-worker` succeeds.
+- End-to-end against the real containers and Resend: registered the Resend
+  account owner's address, then booked and confirmed a Santa Monica slot
+  (2026-10-02, 10:00–12:00 America/Los_Angeles) through the api. The worker
+  logged `notification.delivered` for both `confirmation-email` and
+  `receipt`, each with a Resend `emailId`.
+- Redirect, end to end: with `EMAIL_REDIRECT_TO` set to the owner's
+  address, registered `alice.redirect-test@example.com` and booked and
+  confirmed an Orchard slot (2026-10-05 10:00 Asia/Singapore). Both emails
+  were delivered (Resend accepted them) to the owner's inbox instead.
+- On startup the worker drained a backlog of about 40 old messages for
+  e2e users that no longer exist. Each one failed with "User … not found"
+  (or Resend's `validation_error`), was retried, and was dead-lettered after
+  3 attempts, which shows the retry/DLQ path works with real failures.
+- e2e suite not re-run; nothing in `api` changed beyond the two new required
+  env vars.
+
+### Current environment state (as of pausing)
+
+- Containers up. `api` and `notification-worker` were started in the
+  background for the end-to-end test.
+- The local `.env` has a real (send-only) `RESEND_API_KEY`. `.env` is
+  gitignored.
+- The local `.env` has `EMAIL_REDIRECT_TO` set, so all emails currently go
+  to the Resend account owner.
+- The local DB also has `alice.redirect-test@example.com` (same password)
+  with a confirmed Orchard reservation for 2026-10-05.
+- The local DB has a test user for the Resend account owner's address
+  (password `phastos-resend-test`) with a confirmed reservation for
+  2026-10-02 17:00Z. With `REMINDER_LEAD_MINUTES=60`, a running worker
+  will send a reminder about an hour before.
+- The notification DLQs hold the dead-lettered backlog described above.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -1750,7 +1857,7 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: an audit log in `event-consumer` (real notifications on hold)
+## Next step: an audit log in `event-consumer`
 
 **Suggested order:**
 
@@ -1761,20 +1868,14 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    `reservation_audit` table with one row per event, queryable by slot or
    user. Builds on the existing dedupe, needs no external service, and
    exercises the `slotId` partitioning/ordering for real.
-3. **Real notifications — ON HOLD until a mail provider is decided.** The
-   payloads already carry the location's `timezone` (Step 15). Still to do:
-   render emails in store-local time with `toSlotLocalTimes`, get the
-   recipient's email address (the payloads only have `userId`; leaning
-   towards looking the user up in Postgres from the worker rather than
-   putting the address on the queue), and pick a provider (SendGrid/SES, or
-   Mailpit locally to see real emails first).
+3. **Verify a sending domain in Resend** so emails can reach users other
+   than the account owner, then point `EMAIL_FROM` at it.
 
 **Can wait** (none of these block the work above):
 
-- **Real email integration** in `notification-worker` (SendGrid/SES). Today
-  it validates the payload and logs `notification.delivered`, so "confirmation
-  email" and "reminder" send nothing. Blocked on choosing a provider (see the
-  on-hold item above); the timezone half is done (Step 15).
+- **Email polish** (Step 23): the emails are plain one-paragraph-per-line
+  text and HTML with no branding, and there is no unsubscribe or
+  notification preference. The DLQs have no alerting or replay tooling yet.
 - **`event-consumer` is a stub** (see item 2 above): it dedupes and logs, with no real
   analytics, audit or inventory-sync behind it.
 - **Rate limiting** beyond DTO validation: none.
@@ -1808,6 +1909,7 @@ Solid and verified end-to-end:
 - Slot-hold concurrency (Redis atomic claim/confirm/release, no double-booking even under a thundering herd)
 - Postgres capacity trigger as a hard backstop if Redis is ever bypassed/stale
 - Kafka lifecycle events, RabbitMQ notification queues with retry/DLQ, reminder sweep
+- Real confirmation/receipt emails via Resend, with the recipient looked up in Postgres and times in store-local time (reminder emails use the same path but haven't been seen arriving yet)
 - The reservation endpoints (`POST /reservations`, `/confirm`, `/cancel`, `GET /reservations`, `GET /reservations/:id`), identity-checked against the caller's JWT rather than a client-supplied userId
 - Locations/slots endpoints (`POST/GET /locations`, `GET /slots`; slots are generated by rule since Step 11, not posted) — a generated slot is immediately bookable with no manual Redis seeding, and `GET /slots` reports live availability computed against Postgres
 - JWT auth with two roles (user/admin): register/login, admin-only location creation and slot generation/capacity edits, and reservation ownership enforced (a user can only confirm/cancel their own booking; admin can act on any)
