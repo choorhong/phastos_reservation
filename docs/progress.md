@@ -1603,8 +1603,10 @@ Small follow-ups after Step 20, one commit each.
 - `origin/master` is at `5fa18d3`, so the Dockerfiles/CI workflow have been
   pushed and should have triggered a GitHub Actions run, but its result
   hasn't been checked yet (the `gh` CLI isn't installed locally).
+  *Later:* checked after Step 23; the `5fa18d3` run passed (see Step 23,
+  "Verified").
 - `60c6ea4` and `203199a` are local only. Local `master` has no upstream
-  tracking branch set.
+  tracking branch set. *Later:* pushed along with Steps 22–23.
 
 ## Step 22 — `ReservationCancelled` for slot-full confirms ✅
 
@@ -1739,8 +1741,16 @@ Ends the "on hold until a mail provider is decided" item: the provider is
   e2e users that no longer exist. Each one failed with "User … not found"
   (or Resend's `validation_error`), was retried, and was dead-lettered after
   3 attempts, which shows the retry/DLQ path works with real failures.
-- e2e suite not re-run; nothing in `api` changed beyond the two new required
-  env vars.
+- e2e suite not re-run locally; nothing in `api` changed beyond the two new
+  required env vars. It did run in CI (below) and passed.
+- **CI on GitHub Actions** (checked through the public REST API, since the
+  `gh` CLI isn't installed): every push has passed. That covers `5fa18d3`
+  (2026-09-23, the first run, with the Dockerfiles/CI from Step 20),
+  `104a734` (2026-09-30) and `275603b` (2026-10-01, this step). In the
+  `275603b` run all four jobs passed: typecheck + unit + e2e tests (105s),
+  and the `api`, `notification-worker` and `event-consumer` image builds.
+  So the api boots on `.env.example`'s placeholder Resend values, and the
+  worker image's `npm ci --omit=dev` picks up `resend`.
 
 ### Current environment state (as of pausing)
 
@@ -1757,6 +1767,8 @@ Ends the "on hold until a mail provider is decided" item: the provider is
   2026-10-02 17:00Z. With `REMINDER_LEAD_MINUTES=60`, a running worker
   will send a reminder about an hour before.
 - The notification DLQs hold the dead-lettered backlog described above.
+- Everything is pushed: `origin/master` is at this step's commits, and CI
+  passed on them.
 
 ## Gotchas hit and fixed along the way
 
@@ -1861,18 +1873,20 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
 
 **Suggested order:**
 
-1. **Check the CI run for `5fa18d3` on GitHub Actions**, then push the
-   local-only commits (Step 21's "Current environment state"). Fix whatever
-   a real runner turns up that local verification couldn't catch.
-2. **Give `event-consumer` a real job: an audit log.** A
+1. **Give `event-consumer` a real job: an audit log.** A
    `reservation_audit` table with one row per event, queryable by slot or
    user. Builds on the existing dedupe, needs no external service, and
    exercises the `slotId` partitioning/ordering for real.
-3. **Verify a sending domain in Resend** so emails can reach users other
+2. **Verify a sending domain in Resend** so emails can reach users other
    than the account owner, then point `EMAIL_FROM` at it.
 
 **Can wait** (none of these block the work above):
 
+- **Cancellation email**: cancelling (user or admin), or a confirm refused
+  because the slot is full (`slot_full`), sends no email. Only a Kafka
+  `ReservationCancelled` is published. Needs a new notification queue, a
+  template in the Step 23 layout, and publishing from both cancel paths in
+  the api.
 - **Email polish** (Step 23): the emails are plain one-paragraph-per-line
   text and HTML with no branding, and there is no unsubscribe or
   notification preference. The DLQs have no alerting or replay tooling yet.
@@ -1897,8 +1911,9 @@ reservation. What's left before this is a real system, beyond the list above:
   refuses to start if `JWT_SECRET` (or any other required variable) is
   missing, but it cannot tell a placeholder from a real secret, so a
   copied-over placeholder value still passes.
-- Dockerfiles and a CI workflow exist (Step 20) and have been pushed, but
-  the result of a real GitHub Actions run hasn't been checked yet.
+- Dockerfiles and a CI workflow exist (Step 20) and pass on GitHub
+  Actions (checked in Step 23). Images are only built in CI, never pushed
+  to a registry, and nothing is deployed.
 - Test coverage is the unit tests for the slot/local-time/reservation-view
   logic, `@lib/config`, `notification-worker` (retry/DLQ, reminder sweep) and
   `event-consumer` (dedupe), plus the api e2e suite. There is no e2e suite
