@@ -23,10 +23,17 @@ docker compose up -d          # Postgres, Redis, RabbitMQ, Kafka (+ kafka-ui)
 npm install
 npm run typeorm -- migration:run -d libs/database/src/data-source.ts
 
+npm run start:all                     # all three apps in one terminal; Ctrl+C stops them all
+
+# or one app per terminal:
 npm run start:api                     # http://localhost:3000, Swagger at /docs
 npm run start:notification-worker
 npm run start:event-consumer
 ```
+
+All of these run in watch mode, so an app restarts by itself when its code
+changes. In `start:all` each line is prefixed with the app it came from
+(`[api]`, `[worker]`, `[events]`).
 
 ## Tests
 
@@ -41,4 +48,6 @@ npm run test:e2e              # boots the real api against docker-compose servic
   Kafka event design, RabbitMQ usage, and the design decisions
 - [Redis hold flow](docs/redis.md): keys and the claim/confirm/release lifecycle
 - [Kafka event design](docs/kafka.md): topic, partitioning and event types
+- [Deployment](docs/deployment.md): running everything on one EC2 instance
+  with `docker-compose.prod.yml`
 - [Progress log](docs/progress.md): step-by-step build log, gotchas and how-tos

@@ -1,0 +1,7 @@
+# Used by the optional `caddy` service in docker-compose.prod.yml. Caddy gets
+# and renews a Let's Encrypt certificate for API_DOMAIN by itself; the
+# domain's DNS A record must point at this host, with ports 80/443 open.
+{$API_DOMAIN} {
+	encode gzip
+	reverse_proxy api:{$API_PORT}
+}

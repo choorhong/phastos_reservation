@@ -1,0 +1,176 @@
+# Production: the three apps plus self-hosted Postgres/Redis/RabbitMQ/Kafka
+# on one host (e.g. one EC2 instance). See docs/deployment.md.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# Differences from the dev docker-compose.yml:
+#  - Nothing is published on the host's public interfaces. Postgres, Redis,
+#    RabbitMQ and Kafka are reachable only on the compose network; the api is
+#    published on 127.0.0.1 only, for a reverse proxy on the same host (the
+#    optional `caddy` service below, or an nginx you already run).
+#  - Credentials come from .env.production, never hardcoded here.
+#  - `migrate` runs the database migrations once, and the apps only start
+#    after it has finished successfully.
+#  - Everything restarts on failure and on reboot (`unless-stopped`).
+
+# Its own project name, so its containers and volumes never mix with the dev
+# stack's (docker-compose.yml) if both ever run on the same machine.
+name: phastos-prod
+
+# Docker keeps container logs forever by default; cap them so they can't
+# fill the disk (at most 3 x 10 MB per service).
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: "3" }
+
+x-app: &app
+  logging: *logging
+  env_file: .env.production
+  restart: unless-stopped
+  depends_on:
+    migrate: { condition: service_completed_successfully }
+    redis: { condition: service_healthy }
+    rabbitmq: { condition: service_healthy }
+    kafka: { condition: service_healthy }
+
+services:
+  postgres:
+    logging: *logging
+    image: postgres:16
+    # The image reads POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB, the same
+    # names the apps use, so it shares the apps' env file.
+    env_file: .env.production
+    restart: unless-stopped
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    logging: *logging
+    image: redis:7-alpine
+    # Ex: key-expired events for the hold-expiry reaper (see docker-compose.yml).
+    # appendonly: holds survive a Redis restart, not just the last RDB snapshot.
+    command: ["redis-server", "--notify-keyspace-events", "Ex", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    logging: *logging
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set in .env.production}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env.production}
+    restart: unless-stopped
+    # Management UI on the host's loopback only: reach it with an SSH tunnel
+    # (ssh -L 15672:localhost:15672 <host>), e.g. to inspect the DLQs.
+    ports: ["127.0.0.1:15672:15672"]
+    volumes: ["rabbitmqdata:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    logging: *logging
+    image: confluentinc/cp-kafka:7.6.0
+    # KRaft mode, single broker. Advertised as `kafka:9092`, the name the
+    # apps use on the compose network (KAFKA_BROKERS in .env.production).
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Capped so the broker fits next to everything else on one instance.
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?set in .env.production}
+    restart: unless-stopped
+    volumes: ["kafkadata:/var/lib/kafka/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  migrate:
+    logging: *logging
+    build: { context: ., dockerfile: apps/api/Dockerfile, target: migrate }
+    image: phastos-migrate:latest
+    env_file: .env.production
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: phastos-api:latest
+    ports: ["127.0.0.1:${API_PORT:?set in .env.production}:${API_PORT}"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$${API_PORT}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  notification-worker:
+    <<: *app
+    build: { context: ., dockerfile: apps/notification-worker/Dockerfile }
+    image: phastos-notification-worker:latest
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$${NOTIFICATION_WORKER_PORT}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  event-consumer:
+    <<: *app
+    build: { context: ., dockerfile: apps/event-consumer/Dockerfile }
+    image: phastos-event-consumer:latest
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:$${EVENT_CONSUMER_PORT}/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Optional HTTPS reverse proxy with automatic Let's Encrypt certificates.
+  # Only starts with `--profile proxy`. Leave it off if the host already runs
+  # nginx/Caddy on 80/443 (e.g. for another app) and point that at
+  # 127.0.0.1:${API_PORT} instead -- see docs/deployment.md.
+  caddy:
+    logging: *logging
+    image: caddy:2-alpine
+    profiles: [proxy]
+    environment:
+      API_DOMAIN: ${API_DOMAIN:-}
+      API_PORT: ${API_PORT}
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitmqdata:
+  kafkadata:
+  caddydata:
