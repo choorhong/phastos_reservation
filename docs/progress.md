@@ -1820,6 +1820,15 @@ Ends the "on hold until a mail provider is decided" item: the provider is
   instance, 16–20 GB if images come from a registry.
 - **The admin bootstrap still works in production**, but its two variables
   should be removed from `.env.production` once the admin exists.
+- **Domain: `phastos.app`** (Cloudflare Registrar, DNS in Cloudflare).
+  `mail.phastos.app` is verified in Resend (CNAME `send.mail`, DKIM
+  `resend._domainkey.mail`, DMARC `_dmarc` with `p=none`), and the api will be
+  `api.phastos.app`. Both are filled in in `.env.production.example`, and
+  the runbook has a DNS section. `.app` is HSTS-preloaded, so the api must
+  be served over HTTPS. Checked locally: with
+  `EMAIL_FROM=Phastos <no-reply@mail.phastos.app>` and no redirect, Resend
+  accepted confirmation and receipt emails for `delivered@resend.dev` (not
+  the account owner, refused before verification) and for the owner.
 
 ### Verified
 
