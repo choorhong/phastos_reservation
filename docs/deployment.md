@@ -41,6 +41,29 @@ published on the host; everything else is on the compose network only.
   - Nothing else. Postgres, Redis, RabbitMQ and Kafka are not published at
     all, and the api listens on 127.0.0.1 only.
 
+### DNS (Cloudflare, `phastos.app`)
+
+The domain is registered with Cloudflare Registrar, so its DNS lives in the
+Cloudflare dashboard (phastos.app → DNS → Records).
+
+| Name | Type | Points to | Purpose |
+|---|---|---|---|
+| `api` | A | the Elastic IP, **DNS only (grey cloud)** | The api, `https://api.phastos.app`. Add this once the instance exists. |
+| `send.mail` | CNAME | `send.forge.rmta.net` (from Resend) | Bounces + SPF for `mail.phastos.app` |
+| `resend._domainkey.mail` | TXT | DKIM key (from Resend) | Signs mail from `mail.phastos.app` |
+| `_dmarc` | TXT | `v=DMARC1; p=none;` | DMARC, monitor only; tighten to `p=quarantine` later |
+
+The three email records are already in place, and `mail.phastos.app` is
+verified in Resend.
+
+- **Keep `api` on DNS only (grey cloud)**, at least at first. With
+  Cloudflare's proxy on (orange cloud), Cloudflare terminates HTTPS itself,
+  which can get in the way of Caddy/certbot getting their own certificate.
+  It can be turned on later with SSL mode *Full (strict)*.
+- **`.app` is HTTPS-only.** The whole `.app` top-level domain is on the
+  browsers' HSTS preload list, so `http://api.phastos.app` never loads in a
+  browser. HTTPS through Caddy or certbot (section 5) isn't optional.
+
 ## 2. Install Docker
 
 ```bash
@@ -84,9 +107,9 @@ Replace every `CHANGE_ME`:
 | `JWT_SECRET` | `openssl rand -base64 48` |
 | `KAFKA_CLUSTER_ID` | `docker run --rm confluentinc/cp-kafka:7.6.0 kafka-storage random-uuid`. Set once, never change. |
 | `RESEND_API_KEY` | A **sending-only** key from Resend, separate from your dev key |
-| `EMAIL_FROM` | An address on a domain **verified in Resend** |
+| `EMAIL_FROM` | Already set: `Phastos <no-reply@mail.phastos.app>` (verified in Resend) |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | The admin account created at first start. Remove both lines once it exists. |
-| `API_DOMAIN` | Only for the `caddy` proxy, e.g. `api.example.com` |
+| `API_DOMAIN` | Already set: `api.phastos.app`. Only used by the `caddy` proxy. |
 
 Never set `EMAIL_REDIRECT_TO` here. `.env.production` is gitignored, so it
 only ever exists on the server.
@@ -100,8 +123,9 @@ created. Changing it later means changing the password inside Postgres too
 Pick how HTTPS reaches the api:
 
 **A. Nothing else on this host serves 80/443:** use the bundled Caddy, which
-gets and renews a Let's Encrypt certificate by itself. Point the
-`API_DOMAIN` DNS A record at the Elastic IP first.
+gets and renews a Let's Encrypt certificate by itself. Add the `api` A
+record (section 1, DNS) and wait until `dig +short api.phastos.app` returns
+the Elastic IP before starting, or the certificate request fails.
 
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env.production --profile proxy up -d --build
@@ -116,7 +140,7 @@ docker compose -f docker-compose.prod.yml --env-file .env.production up -d --bui
 
 ```nginx
 server {
-    server_name api.example.com;
+    server_name api.phastos.app;
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
@@ -126,7 +150,7 @@ server {
 }
 ```
 
-Then `sudo certbot --nginx -d api.example.com` for the certificate.
+Then `sudo certbot --nginx -d api.phastos.app` for the certificate.
 
 Either way, the first start builds the images (a few minutes), starts
 Postgres/Redis/RabbitMQ/Kafka, runs **`migrate`** (all database migrations,
@@ -144,7 +168,7 @@ alias dcp='docker compose -f docker-compose.prod.yml --env-file .env.production'
 dcp ps                                   # all "healthy"; migrate "Exited (0)"
 dcp logs migrate                         # "... has been executed successfully"
 curl -s localhost:3000/health            # from the instance
-curl -s https://api.example.com/health   # from anywhere, once the proxy is up
+curl -s https://api.phastos.app/health   # from anywhere, once the proxy is up
 ```
 
 Swagger is at `/docs` on the api.
