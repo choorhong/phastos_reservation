@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 23 (real notification emails via Resend); next up is an audit log in `event-consumer`
+## Status: paused after Step 24 (production compose for one EC2 instance); next up is an audit log in `event-consumer`
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -1755,7 +1755,7 @@ Ends the "on hold until a mail provider is decided" item: the provider is
 ### Current environment state (as of pausing)
 
 - Containers up. `api` and `notification-worker` were started in the
-  background for the end-to-end test.
+  background for the end-to-end test. *Later:* both stopped after Step 23.
 - The local `.env` has a real (send-only) `RESEND_API_KEY`. `.env` is
   gitignored.
 - The local `.env` has `EMAIL_REDIRECT_TO` set, so all emails currently go
@@ -1769,6 +1769,85 @@ Ends the "on hold until a mail provider is decided" item: the provider is
 - The notification DLQs hold the dead-lettered backlog described above.
 - Everything is pushed: `origin/master` is at this step's commits, and CI
   passed on them.
+
+## Step 24 — Production compose for one EC2 instance, `start:all` ✅
+
+### What changed
+
+- **`docker-compose.prod.yml`**: the three apps plus self-hosted Postgres,
+  Redis, RabbitMQ and Kafka on one host, under its own project name
+  (`phastos-prod`) so it never shares volumes with the dev stack. Nothing
+  is published on the host except the api (`127.0.0.1:${API_PORT}`) and the
+  RabbitMQ admin page (`127.0.0.1:15672`, for an SSH tunnel). Everything is
+  `restart: unless-stopped`, with health checks for every service (the apps
+  via `wget` against their `/health`). Kafka advertises `kafka:9092` and is
+  capped at a 512 MB heap. Redis gets `--appendonly yes`. Container logs
+  are capped at 3 × 10 MB per service (Docker keeps them forever by
+  default).
+- **`migrate` stage in `apps/api/Dockerfile`**: a one-shot image built
+  from the `build` stage (it has ts-node, the TypeORM CLI and the `.ts`
+  migrations) that runs `migration:run`. In the prod compose file the apps
+  only start after it exits successfully. It sits before `runtime`, so a
+  plain `docker build` (CI) still produces the runtime image. This closes
+  the "migrations are a separate, manual step" note from Step 20.
+- **Optional `caddy` service** (`--profile proxy`, `deploy/Caddyfile`):
+  HTTPS with automatic Let's Encrypt for `API_DOMAIN`. Left off when the
+  host already runs nginx (for example for another app); the runbook has an
+  nginx server block for that case.
+- **`.env.production.example`**: every variable with production values
+  (compose service names as hosts, `CHANGE_ME` for secrets), plus
+  `KAFKA_CLUSTER_ID` and `API_DOMAIN`, which only the compose file reads.
+  `.gitignore` now ignores `.env.*` except the two example files.
+- **`docs/deployment.md`**: runbook covering instance sizing, security
+  group, Docker install, configuration, first start (Caddy or existing
+  nginx), deploys, backups, day-to-day commands and the limits of this setup.
+- **`npm run start:all`** (dev): runs the three apps in watch mode in one
+  terminal via `concurrently` (new dev dependency), with each line
+  prefixed `[api]`/`[worker]`/`[events]`. In the README.
+
+### Things worth knowing
+
+- **Images are built on the instance** (`up -d --build`). That's simple, but
+  it costs a few minutes of the server's CPU and memory per deploy. Next step
+  up: CI pushes its images to ECR and the instance pulls them.
+- **`POSTGRES_PASSWORD` only applies when the volume is first created**
+  (standard `postgres` image behaviour).
+- **Never `down -v` on the server**: it deletes the data volumes.
+- **Sizing (measured):** about 0.9 GB of memory at idle, so a t3.micro
+  (1 GB) doesn't fit; a t3.small (2 GB) is the floor and only with images
+  built elsewhere plus swap; t3.medium is the documented minimum. On disk the
+  images are ~3.75 GB, so 8 GB isn't enough; 30 GB when building on the
+  instance, 16–20 GB if images come from a registry.
+- **The admin bootstrap still works in production**, but its two variables
+  should be removed from `.env.production` once the admin exists.
+
+### Verified
+
+- Ran the full production stack locally with a throwaway `.env.production`
+  (random secrets, fake Resend key). It built in about 4 minutes, `migrate`
+  ran all 6 migrations and exited 0, and all 7 services reported healthy.
+  `docker compose ps` showed only `127.0.0.1:3000` and `127.0.0.1:15672`
+  published.
+- Smoke test through the api: the admin bootstrapped and logged in, created
+  a location (its slots were generated), a user registered, held and
+  confirmed a slot. `event-consumer` processed `ReservationRequested` and
+  `ReservationConfirmed`, and the worker tried both emails, which Resend
+  rejected (fake key) and which were retried and then dead-lettered.
+- Idle memory for the whole stack: about 0.9 GB (Kafka ~370 MB, RabbitMQ
+  ~190 MB, api ~100 MB, the other two apps ~70 MB each, Postgres ~70 MB,
+  Redis ~20 MB).
+- **Not tested:** the `caddy` service (needs a real domain pointing at a
+  real host), and an actual EC2 instance.
+- `npm run start:all` started all three apps with prefixed output, and
+  Ctrl+C stopped them all. (The dev containers happened to be stopped, so
+  the apps couldn't connect to their services during that check.)
+
+### Current environment state (as of pausing)
+
+- The local test stack was removed with `down -v`; the dev volumes are
+  untouched. The four built images (`phastos-api`, `-notification-worker`,
+  `-event-consumer`, `-migrate`, ~2.3 GB) are kept as build cache.
+- No app processes running; the dev containers are stopped.
 
 ## Gotchas hit and fixed along the way
 
@@ -1913,7 +1992,8 @@ reservation. What's left before this is a real system, beyond the list above:
   copied-over placeholder value still passes.
 - Dockerfiles and a CI workflow exist (Step 20) and pass on GitHub
   Actions (checked in Step 23). Images are only built in CI, never pushed
-  to a registry, and nothing is deployed.
+  to a registry. A production compose file and an EC2 runbook exist
+  (Step 24, `docs/deployment.md`), but nothing has been deployed yet.
 - Test coverage is the unit tests for the slot/local-time/reservation-view
   logic, `@lib/config`, `notification-worker` (retry/DLQ, reminder sweep) and
   `event-consumer` (dedupe), plus the api e2e suite. There is no e2e suite
