@@ -40,6 +40,7 @@ changes. In `start:all` each line is prefixed with the app it came from
 ```bash
 npm test                      # unit tests
 npm run test:e2e              # boots the real api against docker-compose services
+                              # (stop the dev api/notification-worker first; it checks)
 ```
 
 ## Docs
