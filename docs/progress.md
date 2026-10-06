@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 28 (server-set cancel reason); next up is an audit log in `event-consumer`
+## Status: paused after Step 29 (audit log); next up is launching on EC2 (waiting on AWS account verification), then CloudWatch logs and alarms
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2122,6 +2122,64 @@ Step 27).
   `user_cancelled`, stored and emailed; an admin cancelling their own
   booking gets `user_cancelled`.
 
+## Step 29 — Audit log: `reservation_audit`, written by event-consumer, `GET /audit` ✅
+
+Gives `event-consumer` a real job (it only deduped and logged before).
+
+### What changed
+
+- **Migration `AddReservationAudit1791300000000`** and entity
+  `ReservationAudit` (`@lib/database`): one row per Kafka event, with
+  `event_id` (PK), `event_type`, `occurred_at`, `slot_id`, `location_id`,
+  `reservation_id` and `user_id` (both null for `SlotReleased`),
+  `correlation_id`, `payload` (JSONB, as published) and `recorded_at`.
+  Indexed by reservation, user and slot, each with `occurred_at` (partial
+  indexes for the nullable two). No foreign keys, on purpose: history
+  outlives what it describes.
+- **event-consumer** (`EventsConsumerService`): the `processed_events`
+  claim and the audit insert now run **in one transaction**, so an event is
+  recorded exactly once: never claimed-but-unrecorded after a crash, never
+  twice on redelivery.
+- **api: `GET /audit`, admin only** (`AuditModule`). Filters
+  `reservationId` / `userId` / `slotId` (at least one is required; combined,
+  an entry must match all of them), `from` (inclusive) / `to` (exclusive)
+  as ISO 8601, `limit` (default 100, max 500). Oldest first; page forward by
+  passing the last `occurredAt` as `from`.
+- Decisions taken (easy to extend later): admins only, no per-user history
+  endpoint; kept forever, no retention job.
+
+### Things worth knowing
+
+- **Only events from now on.** Nothing is backfilled. Kafka keeps 7 days by
+  default, so older history can't be replayed.
+- **Eventually consistent:** a change appears once event-consumer has read
+  it from Kafka. In the live check everything was recorded within the 3
+  seconds before the history was read; the exact delay wasn't measured.
+- **The e2e suite doesn't run event-consumer**, so `audit.e2e-spec.ts`
+  inserts rows directly and tests the endpoint; the writing side is
+  covered by event-consumer's unit tests and the live check below.
+- **Deploying it:** nothing extra. `migrate` applies the migration before
+  the apps start, and event-consumer is already in the production stack.
+
+### Verified
+
+- `tsc --noEmit` clean. Unit: 107 (event-consumer's spec rewritten: one
+  transaction, the audit row's exact values, `SlotReleased` with null
+  reservation/user, no audit row for a duplicate). e2e: 94 (7 new in
+  `audit.e2e-spec.ts`: 401/403 for non-admins, 400 without a filter or
+  with a malformed one, one reservation's history oldest first, slot filter
+  including `SlotReleased`, combined filters, `limit` and `from`/`to`).
+- Live, on the dev stack with the real event-consumer: hold → confirm →
+  admin cancel, then `GET /audit?reservationId=…` returned
+  `ReservationRequested`, `ReservationConfirmed`, `ReservationCancelled`
+  (`admin_cancelled`) in order; `?slotId=…` added `SlotReleased`
+  (reservation null); a normal user got 403.
+
+### Current environment state (as of pausing)
+
+- The dev database has the new migration applied. Dev api,
+  notification-worker and event-consumer are running.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -2221,24 +2279,28 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: an audit log in `event-consumer`
+## Next step: launch on EC2, then CloudWatch
 
 **Suggested order:**
 
-1. **Give `event-consumer` a real job: an audit log.** A
-   `reservation_audit` table with one row per event, queryable by slot or
-   user. Builds on the existing dedupe, needs no external service, and
-   exercises the `slotId` partitioning/ordering for real.
-2. **Verify a sending domain in Resend** so emails can reach users other
-   than the account owner, then point `EMAIL_FROM` at it.
+1. **Launch on EC2** once AWS finishes verifying the account (Step 25,
+   "Current environment state"): instance, Elastic IP, the `api` DNS
+   record, server setup, then the GitHub variables and the first deploy
+   (`docs/deployment.md` sections 1–7). The backup cron (section 8) right
+   after.
+2. **CloudWatch logs and alarms.** Today nothing alerts if the instance
+   goes down, the disk fills, or emails start dead-lettering, and container
+   logs only live on the instance (capped at 30 MB per service). Ship the
+   logs to CloudWatch Logs, plus alarms by email for the instance status
+   check, disk and memory.
 
 **Can wait** (none of these block the work above):
 
 - **Email polish** (Step 23): the emails are plain one-paragraph-per-line
   text and HTML with no branding, and there is no unsubscribe or
   notification preference. The DLQs have no alerting or replay tooling yet.
-- **`event-consumer` is a stub** (see item 2 above): it dedupes and logs, with no real
-  analytics, audit or inventory-sync behind it.
+- **Audit log extensions** (Step 29): a per-user `GET /reservations/:id/history`,
+  and a retention job if the table ever needs trimming.
 - **Rate limiting** beyond DTO validation: none.
 - **Config cleanups** (Step 10, "Things worth knowing"): two of the three
   done in Step 18 (dropped `ConfigModule.forRoot()`/`@nestjs/config`, typed
