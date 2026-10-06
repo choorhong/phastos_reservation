@@ -254,10 +254,13 @@ describe('reservations (e2e)', () => {
       await getReservation(app, alice, randomUUID()).expect(404);
     });
 
-    it('does not let a client set a system-only cancel reason', async () => {
+    it('ignores a cancel reason sent by the client; the server records who cancelled', async () => {
       const alice = await registerUser(app, 'alice');
       const held = await hold(app, alice, nextSlot().id).expect(201);
-      await cancel(app, alice, held.body.id, { reason: 'hold_expired' }).expect(400);
+      const cancelled = await cancel(app, alice, held.body.id, { reason: 'hold_expired' }).expect(
+        200,
+      );
+      expect(cancelled.body.cancelReason).toBe('user_cancelled');
     });
   });
 
@@ -322,7 +325,7 @@ describe('reservations (e2e)', () => {
 
       await getReservation(app, admin, id).expect(200);
       await confirm(app, admin, id).expect(200);
-      const cancelled = await cancel(app, admin, id, { reason: 'admin_cancelled' }).expect(200);
+      const cancelled = await cancel(app, admin, id).expect(200);
       expect(cancelled.body.cancelReason).toBe('admin_cancelled');
       await expectPublished(eventSpies.cancellationEmail, 1);
       expect(eventSpies.cancellationEmail).toHaveBeenCalledWith(
@@ -335,13 +338,30 @@ describe('reservations (e2e)', () => {
       );
     });
 
-    it('tells the user they cancelled, even if they send reason admin_cancelled themselves', async () => {
+    it('records and emails user_cancelled even if the user sends reason admin_cancelled', async () => {
       const alice = await registerUser(app, 'alice');
       const held = await hold(app, alice, nextSlot().id).expect(201);
       await confirm(app, alice, held.body.id).expect(200);
 
-      await cancel(app, alice, held.body.id, { reason: 'admin_cancelled' }).expect(200);
+      const cancelled = await cancel(app, alice, held.body.id, {
+        reason: 'admin_cancelled',
+      }).expect(200);
+      expect(cancelled.body.cancelReason).toBe('user_cancelled');
 
+      await expectPublished(eventSpies.cancellationEmail, 1);
+      expect(eventSpies.cancellationEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'user_cancelled' }),
+        expect.any(String),
+      );
+    });
+
+    it('records user_cancelled when an admin cancels their own booking', async () => {
+      const held = await hold(app, admin, nextSlot().id).expect(201);
+      await confirm(app, admin, held.body.id).expect(200);
+
+      const cancelled = await cancel(app, admin, held.body.id).expect(200);
+
+      expect(cancelled.body.cancelReason).toBe('user_cancelled');
       await expectPublished(eventSpies.cancellationEmail, 1);
       expect(eventSpies.cancellationEmail).toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'user_cancelled' }),

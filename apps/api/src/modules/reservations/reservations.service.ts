@@ -15,7 +15,6 @@ import { EventsPublisherService } from '@app/api/modules/events/events-publisher
 import { NotificationsPublisherService } from '@app/api/modules/notifications/notifications-publisher.service';
 import { HoldExpiredError, SlotSoldOutError } from '@app/api/modules/slots/slot-hold.errors';
 import { SlotHold, SlotHoldService } from '@app/api/modules/slots/slot-hold.service';
-import { CancelReservationDto } from './dto/cancel-reservation.dto';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { ListReservationsDto } from './dto/list-reservations.dto';
 import { ReservationView, toReservationView } from './reservation-view';
@@ -229,11 +228,7 @@ export class ReservationsService {
     return toReservationView(reservation);
   }
 
-  async cancel(
-    reservationId: string,
-    dto: CancelReservationDto,
-    currentUser: AuthenticatedUser,
-  ): Promise<ReservationView> {
+  async cancel(reservationId: string, currentUser: AuthenticatedUser): Promise<ReservationView> {
     const correlationId = this.cls.getId();
 
     const reservation = await this.reservations.findOne({
@@ -264,7 +259,13 @@ export class ReservationsService {
     const wasConfirmed = reservation.status === 'confirmed';
     reservation.status = 'cancelled';
     reservation.cancelledAt = new Date();
-    reservation.cancelReason = dto.reason ?? 'user_cancelled';
+    // Who cancelled comes from the caller's token, never the request: an
+    // admin cancelling someone else's booking is 'admin_cancelled'; the
+    // owner (an admin cancelling their own booking too) is 'user_cancelled'.
+    reservation.cancelReason =
+      currentUser.role === 'admin' && currentUser.userId !== reservation.userId
+        ? 'admin_cancelled'
+        : 'user_cancelled';
     await this.reservations.save(reservation);
 
     const eventCtx = {
@@ -290,17 +291,13 @@ export class ReservationsService {
     }
 
     if (wasConfirmed) {
-      // Who actually cancelled, from the caller's token -- not the
-      // client-supplied `dto.reason`, which a user could set to
-      // 'admin_cancelled' on their own booking.
-      const byStaff = currentUser.role === 'admin' && currentUser.userId !== reservation.userId;
       try {
         await this.notifications.publishCancellationEmail(
           {
             reservationId: reservation.id,
             userId: reservation.userId,
             cancelledAt: reservation.cancelledAt.toISOString(),
-            reason: byStaff ? 'admin_cancelled' : 'user_cancelled',
+            reason: reservation.cancelReason,
           },
           correlationId,
         );
