@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 25 (automatic deploys via CI → ECR → Systems Manager); next up is an audit log in `event-consumer`
+## Status: paused after Step 26 (nightly database backups to S3); next up is an audit log in `event-consumer`
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -1953,6 +1953,64 @@ with OIDC, and the instance pulls images with its own role.
   the repo. `.env.production` will be created on the server from them.
 - The local test stack, registry and images were removed; the dev
   containers and the dev api/worker are running.
+
+## Step 26 — Nightly database backups to S3 ✅
+
+### What changed
+
+- **`deploy/aws-setup.yml`**: an S3 bucket `phastos-backups-<account>-<region>`
+  (private, SSE-S3, HTTPS-only bucket policy, bucket-owner-enforced,
+  `postgres/` expires after `BackupRetentionDays` (default 30), incomplete
+  uploads aborted after 1 day). `DeletionPolicy: Retain`, so deleting the
+  stack never deletes backups. The instance role gets `s3:PutObject` and
+  `s3:GetObject` on `postgres/*`, plus `s3:ListBucket`, but **no delete**.
+  New output `BackupBucketName`.
+- **`deploy/backup.sh`** (server, nightly from cron): `pg_dump -Fc` to a
+  local temp file; uploads only if `pg_dump` succeeded and
+  `pg_restore --list` reads it as a dump with tables; then
+  `s3://<bucket>/postgres/YYYY/MM/phastos-<UTC time>.dump`. Adds `/snap/bin`
+  to `PATH` for cron. Reads `BACKUP_BUCKET` (new in
+  `.env.production.example`), and gets the region from `IMAGE_REGISTRY`.
+- **`docs/deployment.md`** section 8 rewritten: how it works, the cron line
+  (19:00 UTC = 03:00 Singapore), checking it, and a tested restore
+  procedure. Section 0: the bucket, the new output, and how to **update** an
+  existing stack.
+
+### Things worth knowing
+
+- **`pg_restore --list` is a sanity check, not an integrity check.** It
+  only reads the dump's table of contents. What stops a failed dump being
+  uploaded is `pg_dump`'s exit status (the script exits on it). The
+  comments say exactly that.
+- **Bash 3.2 (macOS) vs 5 (Ubuntu):** with `set -u`, an empty array is
+  "unbound" in bash 3.2, and the error combined with an `EXIT` trap even
+  exits 0 there. Real command failures still exit 1. The script now uses
+  `${arr[@]+"${arr[@]}"}`, which works in both. Checked in `bash:5` too.
+- **No alerting on a failed backup yet**: cron appends to
+  `~/phastos-backup.log`.
+- Redis holds/counters aren't in the backup; after a restore they may
+  disagree with Postgres until holds expire.
+
+### Verified
+
+- `cfn-lint` clean on the template; `shellcheck` clean on all scripts.
+- Against the production stack run locally, with a stand-in `aws` command
+  that saved "uploads" to a folder: the backup produced a 20 KB dump with
+  the 6 tables. Then the data was damaged (a user and all 88 slots
+  deleted), the documented restore run (`pg_restore --clean --if-exists
+  --no-owner --exit-on-error`, exit 0), and everything came back: users 2,
+  slots 88, migrations 6. The `trg_enforce_slot_capacity` trigger and its
+  function are in the dump and present after the restore, the apps came
+  back healthy, and the restored user could log in.
+- **Not tested:** real S3 and the IAM permissions (needs the stack update
+  and the instance), and cron itself.
+
+### Current environment state (as of pausing)
+
+- The `phastos-setup` stack has been **updated** with this template
+  (`UPDATE_COMPLETE`): the backup bucket exists (empty until the server's
+  first backup) and `BackupBucketName` is in the outputs.
+- The local test stack was removed; dev containers and dev apps running.
 
 ## Gotchas hit and fixed along the way
 
