@@ -6,6 +6,7 @@ import type { NotificationMessage } from '@lib/rabbitmq-contracts';
 import { EmailService } from '@app/notification-worker/modules/email/email.service';
 import {
   BookingDetails,
+  renderCancellationEmail,
   renderConfirmationEmail,
   renderReceiptEmail,
   renderReminderEmail,
@@ -68,6 +69,12 @@ function render(envelope: NotificationMessage, booking: BookingDetails): Rendere
       return renderReceiptEmail({
         ...booking,
         confirmedAt: new Date(envelope.payload.confirmedAt),
+      });
+    case 'cancellation-email':
+      return renderCancellationEmail({
+        ...booking,
+        cancelledAt: new Date(envelope.payload.cancelledAt),
+        byStaff: envelope.payload.reason === 'admin_cancelled',
       });
   }
 }

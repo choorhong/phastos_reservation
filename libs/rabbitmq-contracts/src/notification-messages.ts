@@ -1,18 +1,21 @@
 import { randomUUID } from 'crypto';
 import type { Channel, ConfirmChannel } from 'amqplib';
 import type { ChannelWrapper } from 'amqp-connection-manager';
+import type { ReservationCancelReason } from '@lib/domain';
 
 /**
- * The three notification task queues from docs/architecture.md §4 ("RabbitMQ vs Direct
+ * The notification task queues from docs/architecture.md §4 ("RabbitMQ vs Direct
  * Calls"): slow/unreliable side effects that must never block the request
  * that triggered them, and need retry + DLQ instead of just failing once.
  */
-export type NotificationQueueName = 'confirmation-email' | 'reminder' | 'receipt';
+export type NotificationQueueName =
+  'confirmation-email' | 'reminder' | 'receipt' | 'cancellation-email';
 
 export const NOTIFICATION_QUEUE_NAMES: readonly NotificationQueueName[] = [
   'confirmation-email',
   'reminder',
   'receipt',
+  'cancellation-email',
 ];
 
 interface NotificationEnvelope<T extends NotificationQueueName, P> {
@@ -46,10 +49,23 @@ export interface ReceiptPayload {
   confirmedAt: string; // ISO 8601
 }
 
+/**
+ * Only for a booking that had been confirmed (the user was told they had
+ * it), cancelled by the user or an admin. Not sent for a hold cancelled
+ * before confirming, nor for a confirm refused because the slot was full.
+ */
+export interface CancellationEmailPayload {
+  reservationId: string;
+  userId: string;
+  cancelledAt: string; // ISO 8601
+  reason: Extract<ReservationCancelReason, 'user_cancelled' | 'admin_cancelled'>;
+}
+
 export type NotificationMessage =
   | NotificationEnvelope<'confirmation-email', ConfirmationEmailPayload>
   | NotificationEnvelope<'reminder', ReminderPayload>
-  | NotificationEnvelope<'receipt', ReceiptPayload>;
+  | NotificationEnvelope<'receipt', ReceiptPayload>
+  | NotificationEnvelope<'cancellation-email', CancellationEmailPayload>;
 
 /**
  * Header carrying the number of prior delivery attempts. The consumer reads
@@ -72,7 +88,7 @@ export function notificationDlqName(queue: NotificationQueueName): string {
 }
 
 /**
- * Declares the exchanges/queues/bindings for all three notification queues
+ * Declares the exchanges/queues/bindings for all the notification queues
  * plus their matching DLQs. Idempotent (plain `assert*`/`bindQueue` calls),
  * so both `apps/api` (producer) and `apps/notification-worker` (consumer)
  * can safely run this against the same broker on startup.

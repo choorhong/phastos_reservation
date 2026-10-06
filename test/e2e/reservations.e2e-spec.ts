@@ -102,6 +102,7 @@ describe('reservations (e2e)', () => {
       released: jest.spyOn(events, 'publishSlotReleased'),
       confirmationEmail: jest.spyOn(notifications, 'publishConfirmationEmail'),
       receipt: jest.spyOn(notifications, 'publishReceipt'),
+      cancellationEmail: jest.spyOn(notifications, 'publishCancellationEmail'),
     };
   });
 
@@ -184,6 +185,15 @@ describe('reservations (e2e)', () => {
         expect.objectContaining({ slotId: slot.id }),
         expect.objectContaining({ releasedCapacity: 1, reason: 'cancellation' }),
       );
+      await expectPublished(eventSpies.cancellationEmail, 1);
+      expect(eventSpies.cancellationEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reservationId: held.body.id,
+          userId: alice.userId,
+          reason: 'user_cancelled',
+        }),
+        expect.any(String),
+      );
     });
 
     it('can cancel a hold that was never confirmed', async () => {
@@ -195,6 +205,9 @@ describe('reservations (e2e)', () => {
 
       expect(await availableInPostgres(slot)).toBe(3);
       expect(await redisAvailable(slot)).toBe(3);
+      // No booking was ever confirmed, so there's nothing to tell the user.
+      await expectPublished(eventSpies.cancelled, 1);
+      expect(eventSpies.cancellationEmail).not.toHaveBeenCalled();
     });
 
     it('confirm is idempotent and does not publish twice', async () => {
@@ -219,6 +232,7 @@ describe('reservations (e2e)', () => {
       await cancel(app, alice, held.body.id).expect(200);
 
       expect(eventSpies.released).toHaveBeenCalledTimes(1);
+      expect(eventSpies.cancellationEmail).toHaveBeenCalledTimes(1);
       expect(await redisAvailable(slot)).toBe(3);
     });
 
@@ -310,6 +324,29 @@ describe('reservations (e2e)', () => {
       await confirm(app, admin, id).expect(200);
       const cancelled = await cancel(app, admin, id, { reason: 'admin_cancelled' }).expect(200);
       expect(cancelled.body.cancelReason).toBe('admin_cancelled');
+      await expectPublished(eventSpies.cancellationEmail, 1);
+      expect(eventSpies.cancellationEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reservationId: id,
+          userId: alice.userId,
+          reason: 'admin_cancelled',
+        }),
+        expect.any(String),
+      );
+    });
+
+    it('tells the user they cancelled, even if they send reason admin_cancelled themselves', async () => {
+      const alice = await registerUser(app, 'alice');
+      const held = await hold(app, alice, nextSlot().id).expect(201);
+      await confirm(app, alice, held.body.id).expect(200);
+
+      await cancel(app, alice, held.body.id, { reason: 'admin_cancelled' }).expect(200);
+
+      await expectPublished(eventSpies.cancellationEmail, 1);
+      expect(eventSpies.cancellationEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'user_cancelled' }),
+        expect.any(String),
+      );
     });
 
     it('is unaffected by anything in the request body claiming another user', async () => {

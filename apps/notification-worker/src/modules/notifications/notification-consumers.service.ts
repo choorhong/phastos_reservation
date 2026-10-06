@@ -15,7 +15,7 @@ import { RABBITMQ_CHANNEL } from '@app/notification-worker/modules/rabbitmq/rabb
 import { NotificationSenderService } from './notification-sender.service';
 
 /**
- * Consumes the three notification queues (docs/architecture.md §4): each
+ * Consumes the notification queues (docs/architecture.md §4): each
  * message is validated, then sent as an email via Resend
  * (`NotificationSenderService`). Around that, the retry/DLQ mechanics: on a
  * processing failure (malformed payload, unknown user, Resend error), retry up to NOTIFICATION_MAX_RETRIES

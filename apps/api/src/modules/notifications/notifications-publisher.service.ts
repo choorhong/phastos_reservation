@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { ChannelWrapper } from 'amqp-connection-manager';
 import {
+  CancellationEmailPayload,
   ConfirmationEmailPayload,
   publishNotification,
   ReceiptPayload,
@@ -9,7 +10,7 @@ import {
 import { RABBITMQ_CHANNEL } from '@app/api/modules/rabbitmq/rabbitmq-connection.provider';
 
 /**
- * Publishes the three notification task messages (docs/architecture.md §4). These are
+ * Publishes the notification task messages (docs/architecture.md §4). These are
  * "direct producer calls" in docs/architecture.md's terms -- called synchronously from
  * within the request path but only to hand the message to RabbitMQ, not to
  * wait on delivery -- so the request is never blocked by SendGrid/SES or PDF
@@ -32,5 +33,12 @@ export class NotificationsPublisherService {
 
   async publishReceipt(payload: ReceiptPayload, correlationId: string): Promise<void> {
     await publishNotification(this.channel, 'receipt', payload, correlationId);
+  }
+
+  async publishCancellationEmail(
+    payload: CancellationEmailPayload,
+    correlationId: string,
+  ): Promise<void> {
+    await publishNotification(this.channel, 'cancellation-email', payload, correlationId);
   }
 }

@@ -260,6 +260,8 @@ export class ReservationsService {
     // returned to the pool via the same INCR (see redis-hold.scripts.ts).
     await this.slotHoldService.release(reservation.slotId, reservation.holdId);
 
+    // Only a booking the user was told they had gets a cancellation email.
+    const wasConfirmed = reservation.status === 'confirmed';
     reservation.status = 'cancelled';
     reservation.cancelledAt = new Date();
     reservation.cancelReason = dto.reason ?? 'user_cancelled';
@@ -285,6 +287,26 @@ export class ReservationsService {
       });
     } catch (err) {
       this.logger.warn({ err, reservationId }, 'reservation.cancelled_event_publish_failed');
+    }
+
+    if (wasConfirmed) {
+      // Who actually cancelled, from the caller's token -- not the
+      // client-supplied `dto.reason`, which a user could set to
+      // 'admin_cancelled' on their own booking.
+      const byStaff = currentUser.role === 'admin' && currentUser.userId !== reservation.userId;
+      try {
+        await this.notifications.publishCancellationEmail(
+          {
+            reservationId: reservation.id,
+            userId: reservation.userId,
+            cancelledAt: reservation.cancelledAt.toISOString(),
+            reason: byStaff ? 'admin_cancelled' : 'user_cancelled',
+          },
+          correlationId,
+        );
+      } catch (err) {
+        this.logger.warn({ err, reservationId }, 'reservation.cancel_notification_publish_failed');
+      }
     }
 
     return toReservationView(reservation);

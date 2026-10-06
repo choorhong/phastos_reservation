@@ -19,7 +19,7 @@ export interface BookingDetails {
 }
 
 /**
- * Pure renderers for the three notification emails -- no I/O, so they're
+ * Pure renderers for the notification emails -- no I/O, so they're
  * unit-testable on their own. Every time is shown on the location's own
  * clock (`toSlotLocalTimes`), never UTC or the worker's zone: the user
  * needs to know when to turn up at that store.
@@ -51,6 +51,20 @@ export function renderReceiptEmail(booking: BookingDetails & { confirmedAt: Date
     booking,
     [`Confirmed at: ${confirmedAt} (${booking.timezone})`],
   );
+}
+
+export function renderCancellationEmail(
+  booking: BookingDetails & { cancelledAt: Date; byStaff: boolean },
+): RenderedEmail {
+  const cancelledAt = DateTime.fromJSDate(booking.cancelledAt, { zone: booking.timezone }).toFormat(
+    'yyyy-MM-dd HH:mm',
+  );
+  const intro = booking.byStaff
+    ? `Your booking at ${booking.locationName} has been cancelled by our staff.`
+    : `Your booking at ${booking.locationName} has been cancelled, as you requested.`;
+  return render(`Your booking at ${booking.locationName} is cancelled`, intro, booking, [
+    `Cancelled at: ${cancelledAt} (${booking.timezone})`,
+  ]);
 }
 
 /** Intro line, then the reservation ID, then where and when, then any extra lines. */

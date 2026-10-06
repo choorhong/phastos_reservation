@@ -324,6 +324,7 @@ of blocking the request → RabbitMQ.
 | Confirmation email | **RabbitMQ** (`notification-worker`) | Slow/unreliable third-party (SendGrid/SES); needs retry + DLQ; must never block checkout |
 | Reminder notification (e.g. T-1hr before appointment) | **RabbitMQ**, published via a delayed-message plugin or a scheduler that enqueues at the right time | Same — external delivery, needs retry |
 | Receipt/PDF generation | **RabbitMQ** | CPU/IO-bound side task, retryable, not needed to answer the user |
+| Cancellation email (only for a booking that had been confirmed) | **RabbitMQ** (`notification-worker`) | Same as the confirmation email |
 | Analytics / audit / inventory-sync | Kafka consumers (not RabbitMQ) | These are durable-log readers of the event stream, not task-queue workers — they replay history, don't need per-message retry/DLQ semantics the same way |
 
 Each RabbitMQ queue gets a matching DLQ (`x-dead-letter-exchange`) with a

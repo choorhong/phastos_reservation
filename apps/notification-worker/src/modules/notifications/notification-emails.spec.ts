@@ -1,4 +1,5 @@
 import {
+  renderCancellationEmail,
   renderConfirmationEmail,
   renderReceiptEmail,
   renderReminderEmail,
@@ -37,6 +38,34 @@ describe('notification emails', () => {
     const lines = email.text.split('\n');
     expect(lines[1]).toBe('Reservation ID: r1');
     expect(lines[lines.length - 1]).toBe('Confirmed at: 2026-09-20 23:30 (Asia/Singapore)');
+  });
+
+  it('says the user cancelled, with the same details block and the local cancel time', () => {
+    const email = renderCancellationEmail({
+      ...booking,
+      cancelledAt: new Date('2026-09-20T15:30:00Z'),
+      byStaff: false,
+    });
+    expect(email.subject).toBe('Your booking at Orchard Road is cancelled');
+    expect(email.text.split('\n')).toEqual([
+      'Your booking at Orchard Road has been cancelled, as you requested.',
+      'Reservation ID: r1',
+      'Location: Orchard Road',
+      'Address: 270 Orchard Rd, Singapore 238857',
+      'Date/Time: 2026-09-21, 10:00–12:00 (Asia/Singapore)',
+      'Cancelled at: 2026-09-20 23:30 (Asia/Singapore)',
+    ]);
+  });
+
+  it('says staff cancelled when an admin did', () => {
+    const email = renderCancellationEmail({
+      ...booking,
+      cancelledAt: new Date('2026-09-20T15:30:00Z'),
+      byStaff: true,
+    });
+    expect(email.text.split('\n')[0]).toBe(
+      'Your booking at Orchard Road has been cancelled by our staff.',
+    );
   });
 
   it('escapes the location name and address in the HTML body', () => {
