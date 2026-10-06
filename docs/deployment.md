@@ -44,9 +44,17 @@ Do this before launching the instance: it creates the instance's IAM role.
    - `phastos-github-deploy`, the role GitHub Actions assumes. Only runs on
      `master` of this repository can use it, and it can only push to those
      four repositories and run commands on instances tagged `App=phastos`;
-   - `phastos-ec2`, the instance role: Systems Manager plus read-only ECR.
-2. **Note the stack's Outputs:** `DeployRoleArn`, `ImageRegistry` and
-   `InstanceProfileName`.
+   - `phastos-ec2`, the instance role: Systems Manager, read-only ECR, and
+     upload/read (not delete) on the backup bucket;
+   - `phastos-backups-<account>-<region>`, the S3 bucket for database
+     backups (section 8).
+2. **Note the stack's Outputs:** `DeployRoleArn`, `ImageRegistry`,
+   `InstanceProfileName` and `BackupBucketName`.
+
+   **Updating an existing stack** (e.g. after `deploy/aws-setup.yml`
+   changes): CloudFormation → `phastos-setup` → **Update** → **Replace
+   existing template** → upload the new file → keep the parameters → tick
+   the IAM acknowledgement → **Submit**.
 3. **Tell GitHub about it.** GitHub repo → Settings → Secrets and variables
    → Actions → **Variables** tab → add two repository variables:
    - `AWS_REGION`: e.g. `ap-southeast-1`
@@ -164,6 +172,7 @@ Replace every `CHANGE_ME`:
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | The admin account created at first start. Remove both lines once it exists. |
 | `API_DOMAIN` | Already set: `api.phastos.app`. Only used by the `caddy` proxy. |
 | `IMAGE_REGISTRY` | The `ImageRegistry` output from section 0, e.g. `123456789012.dkr.ecr.ap-southeast-1.amazonaws.com` |
+| `BACKUP_BUCKET` | The `BackupBucketName` output from section 0 |
 | `COMPOSE_PROFILES` | `proxy` (default) to run the bundled Caddy; empty if the host already runs nginx (section 5) |
 
 Never set `EMAIL_REDIRECT_TO` here. `.env.production` is gitignored, so it
@@ -281,20 +290,60 @@ Command history.
 
 ## 8. Backups
 
-Postgres is the source of truth. Back it up daily, and keep the copies off
-the instance:
+Postgres is the source of truth. `deploy/backup.sh` dumps it every night to
+the S3 backup bucket created by the stack (section 0). Redis, RabbitMQ and
+Kafka hold short-lived data (holds, queued notifications, events), so they
+aren't backed up.
+
+**How it works:** `pg_dump` (compressed custom format) to a local file;
+upload only if `pg_dump` succeeded and `pg_restore --list` reads the file as
+a dump with tables; then `s3://<bucket>/postgres/YYYY/MM/phastos-<time>.dump`.
+The bucket is private, encrypted and HTTPS-only, deletes backups after 30
+days (`BackupRetentionDays` in the stack), and is kept even if the stack is
+deleted. The instance can upload and read backups but **not delete them**,
+so someone who took over the server still couldn't wipe them.
+
+**Set up once,** on the instance (after `BACKUP_BUCKET` is in
+`.env.production`):
 
 ```bash
-# e.g. in crontab -e, at 03:00 every day (needs the AWS CLI and an
-# instance role that can write to the bucket)
-0 3 * * * cd ~/phastos_reservation && docker compose -f docker-compose.prod.yml --env-file .env.production exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' | aws s3 cp - s3://YOUR-BUCKET/phastos/pg-$(date +\%F).dump
+cd ~/phastos_reservation
+./deploy/backup.sh               # take one now; ends with "uploaded s3://..."
+crontab -e                       # add the line below
 ```
 
-Restore with `pg_restore`. Also take EBS snapshots of the volume (AWS Data
-Lifecycle Manager can schedule them).
+```cron
+# 19:00 UTC = 03:00 in Singapore, every night
+0 19 * * * $HOME/phastos_reservation/deploy/backup.sh >> $HOME/phastos-backup.log 2>&1
+```
 
-Redis, RabbitMQ and Kafka hold short-lived data (holds, queued
-notifications, events), so they are not backed up separately.
+`tail ~/phastos-backup.log` shows the latest runs. Nothing alerts on a
+failed backup yet: check the log now and then, or list the bucket:
+
+```bash
+aws s3 ls --recursive s3://<bucket>/postgres/ | tail -5
+```
+
+**Restore** (tested end to end: data deleted, restored from a dump, the
+apps came back healthy, and the capacity trigger was restored too):
+
+```bash
+cd ~/phastos_reservation
+aws s3 cp s3://<bucket>/postgres/2026/10/phastos-<time>.dump restore.dump   # pick one from `aws s3 ls`
+dcp stop api notification-worker event-consumer                                # nothing writes during the restore
+dcp exec -T postgres sh -c 'pg_restore --clean --if-exists --no-owner --exit-on-error -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < restore.dump
+dcp up -d                                                                      # apps back
+rm restore.dump
+```
+
+`--clean --if-exists` replaces what's in the database with the dump's
+contents, so everything after the backup's time is lost. Redis may still
+hold slot holds or counters from after the backup; they expire by
+themselves (holds after `HOLD_TTL_SECONDS`).
+
+Also consider EBS snapshots of the whole volume (AWS Data Lifecycle
+Manager can schedule them): they restore the entire server, not just the
+database.
 
 ## 9. Day to day
 

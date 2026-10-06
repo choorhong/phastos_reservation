@@ -3,7 +3,8 @@ Description: >-
   Phastos auto-deploy, one-time setup (docs/deployment.md, "Automatic
   deploys"): ECR repositories for the four images, the role GitHub Actions
   assumes through OIDC (push images, send the deploy command), and the EC2
-  instance role (Systems Manager + pull images).
+  instance role (Systems Manager + pull images + write database backups to
+  the backup bucket).
 
 Parameters:
   GitHubRepository:
@@ -33,6 +34,11 @@ Parameters:
     Default: 10
     MinValue: 2
     Description: How many recent images to keep per repository (older ones are deleted).
+  BackupRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: Database backups older than this many days are deleted from the backup bucket.
 
 Conditions:
   CreateOidcProvider: !Equals [!Ref CreateGitHubOidcProvider, 'true']
@@ -75,6 +81,51 @@ Resources:
       ImageScanningConfiguration: { ScanOnPush: true }
       LifecyclePolicy:
         LifecyclePolicyText: !Sub '{"rules":[{"rulePriority":1,"description":"Keep the last ${ImagesToKeep} images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":${ImagesToKeep}},"action":{"type":"expire"}}]}'
+
+  # Nightly Postgres dumps from deploy/backup.sh. Private, encrypted,
+  # HTTPS-only; old dumps expire after BackupRetentionDays. Retained if the
+  # stack is deleted, so deleting the stack never deletes the backups.
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'phastos-backups-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-backups
+            Status: Enabled
+            Prefix: postgres/
+            ExpirationInDays: !Ref BackupRetentionDays
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub '${BackupBucket.Arn}/*'
+            Condition:
+              Bool: { aws:SecureTransport: 'false' }
 
   # Assumed by .github/workflows/ci.yml. Short-lived credentials only, and
   # only for runs on DeployBranch of GitHubRepository.
@@ -157,6 +208,22 @@ Resources:
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly'
+      Policies:
+        # Upload and read backups (for a restore), but not delete them:
+        # someone who took over the instance still can't wipe the backups.
+        # Old ones are removed only by the bucket's lifecycle rule.
+        - PolicyName: database-backups
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub '${BackupBucket.Arn}/postgres/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt BackupBucket.Arn
+                Condition:
+                  StringLike: { s3:prefix: ['postgres/*', 'postgres/'] }
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
@@ -173,3 +240,6 @@ Outputs:
   InstanceProfileName:
     Description: IAM instance profile to attach to the EC2 instance
     Value: !Ref InstanceProfile
+  BackupBucketName:
+    Description: BACKUP_BUCKET in .env.production on the server
+    Value: !Ref BackupBucket
