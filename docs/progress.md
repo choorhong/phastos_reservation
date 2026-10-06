@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 24 (production compose for one EC2 instance); next up is an audit log in `event-consumer`
+## Status: paused after Step 25 (automatic deploys via CI → ECR → Systems Manager); next up is an audit log in `event-consumer`
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -1857,6 +1857,102 @@ Ends the "on hold until a mail provider is decided" item: the provider is
   untouched. The four built images (`phastos-api`, `-notification-worker`,
   `-event-consumer`, `-migrate`, ~2.3 GB) are kept as build cache.
 - No app processes running; the dev containers are stopped.
+
+## Step 25 — Automatic deploys: CI → ECR → Systems Manager ✅
+
+Every push to `master` that passes CI now deploys to the EC2 instance. No
+SSH, no open inbound port and no stored keys: GitHub authenticates to AWS
+with OIDC, and the instance pulls images with its own role.
+
+### What changed
+
+- **`deploy/aws-setup.yml`** (CloudFormation, one-time): four ECR
+  repositories (`phastos-api`, `-notification-worker`, `-event-consumer`,
+  `-migrate`, keeping the last 10 images, scan on push); the GitHub OIDC
+  provider (optional, since an account can only have one); the
+  `phastos-github-deploy` role, which only `master` of this repo can
+  assume, and which can only push to those repositories and
+  `ssm:SendCommand` to instances tagged `App=phastos`; and the
+  `phastos-ec2` instance role/profile (`AmazonSSMManagedInstanceCore` +
+  `AmazonEC2ContainerRegistryReadOnly`).
+- **`.github/workflows/ci.yml`**:
+  - `docker-build` is a 4-image matrix (adds `migrate`). On `master` it
+    assumes the role and pushes `phastos-<app>:<commit>` to ECR; on PRs it
+    only builds. Buildx GitHub Actions cache per image.
+  - New `deploy` job (needs `test` + `docker-build`, `master` only, one at a
+    time) runs `deploy/ssm-deploy.sh`.
+  - Push and deploy only happen once the repository variable
+    `AWS_DEPLOY_ROLE_ARN` is set (plus `AWS_REGION`), so CI behaves exactly
+    as before until AWS is set up. `workflow_dispatch` added, to re-run or
+    re-deploy by hand.
+- **`deploy/ssm-deploy.sh`** (runs in CI): `aws ssm send-command`
+  (`AWS-RunShellScript`, target `tag:App=phastos`) running, as `ubuntu`:
+  `git fetch && git checkout --detach <commit> && ./deploy/deploy.sh
+  <commit>`. Polls until done, prints the output, and fails if the command
+  failed or matched no instance.
+- **`deploy/deploy.sh`** (runs on the server): ECR login via the instance
+  role, `compose pull`, `compose up -d --no-build --remove-orphans --wait`,
+  then removes older `phastos-*` images from the registry and records the
+  commit in `.env.deployed`. Also the manual way to roll back.
+- **`docker-compose.prod.yml`**: app images are
+  `${IMAGE_REGISTRY:-local}/phastos-<app>:${IMAGE_TAG:-latest}`; `build:`
+  is kept as a fallback.
+- **`.env.production.example`**: `IMAGE_REGISTRY` and `COMPOSE_PROFILES`
+  (`proxy` by default, replacing `--profile proxy` on the command line).
+- **`docs/deployment.md`**: new section 0 (AWS setup), instance profile and
+  tag, AWS CLI install, a pipeline-based first start, and section 7
+  rewritten (automatic deploys, rollback, building without CI,
+  troubleshooting). The `dcp` alias now also reads `.env.deployed`.
+  Sizing: the instance no longer builds, so a t3.small (2 GB + swap) and
+  20 GB of disk are enough.
+
+### Things worth knowing
+
+- **Image cleanup is scoped.** `deploy.sh` only removes older
+  `$IMAGE_REGISTRY/phastos-*` images, never `docker image prune --all`,
+  which would also delete another app's images on a shared host. (Caught
+  before it shipped.)
+- **The commit is checked out before `deploy.sh` runs**, by the SSM command
+  itself, so the script and compose file always match the images, and a
+  script never rewrites itself while running.
+- **`.env.deployed`** keeps hand-run `dcp up -d` on the deployed images
+  rather than a `latest` tag that CI never pushes. `--env-file` can be
+  repeated, and Compose reads `COMPOSE_PROFILES` from the env file (both
+  checked).
+- **Rollback** works for the last 10 commits (ECR lifecycle). Migrations
+  are never rolled back.
+
+### Verified
+
+- `cfn-lint` clean on `deploy/aws-setup.yml`; `actionlint` (with
+  shellcheck) clean on `ci.yml`; `shellcheck` clean on both scripts.
+- `deploy.sh` end to end against a local registry (`registry:2` on
+  `localhost:5001`, standing in for ECR) with two fake releases:
+  - first deploy (`aaaa111`): pulled, `migrate` ran, all healthy, 46s;
+  - upgrade (`bbbb222`): apps recreated on the new tag, the `aaaa111`
+    images removed, unrelated local images untouched;
+  - missing release (`cccc333`): pull fails, exit code 18, `bbbb222` keeps
+    running.
+  - The `.env.deployed` change came after this run. The env-file
+    behaviour it relies on was checked on its own, but the full run wasn't
+    repeated.
+- **Not tested:** anything on real AWS (the stack, OIDC, ECR push,
+  Systems Manager, the instance). That needs the account set up first.
+
+### Current environment state (as of pausing)
+
+- **AWS:** the `phastos-setup` stack (`deploy/aws-setup.yml`) is created in
+  `ap-southeast-1` (`CreateGitHubOidcProvider=true`), so the ECR
+  repositories, the GitHub deploy role and the `phastos-ec2` instance
+  profile exist. **No instance yet:** the new AWS account is blocked from
+  launching EC2 until AWS finishes verifying it (support case open).
+- **GitHub repository variables not set yet**, on purpose: they're added
+  right before the first deploy, so pushes until then only build images
+  and never try to deploy to an instance that isn't ready.
+- **Production secrets** live in a password manager (Bitwarden), not in
+  the repo. `.env.production` will be created on the server from them.
+- The local test stack, registry and images were removed; the dev
+  containers and the dev api/worker are running.
 
 ## Gotchas hit and fixed along the way
 
