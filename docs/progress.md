@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 26 (nightly database backups to S3); next up is an audit log in `event-consumer`
+## Status: paused after Step 27 (cancellation email); next up is an audit log in `event-consumer`
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2012,6 +2012,86 @@ with OIDC, and the instance pulls images with its own role.
   first backup) and `BackupBucketName` is in the outputs.
 - The local test stack was removed; dev containers and dev apps running.
 
+## Step 27 — Cancellation email, e2e guard against running dev apps ✅
+
+Closes the "Cancellation email" item from "Can wait".
+
+### What changed
+
+- **New `cancellation-email` queue** in `@lib/rabbitmq-contracts`
+  (`NotificationQueueName`, `NOTIFICATION_QUEUE_NAMES`,
+  `CancellationEmailPayload`: `reservationId`, `userId`, `cancelledAt`,
+  `reason: 'user_cancelled' | 'admin_cancelled'`). Both apps declare it at
+  startup through `assertNotificationsTopology`, with its own DLQ.
+- **api:** `NotificationsPublisherService.publishCancellationEmail`.
+  `ReservationsService.cancel` publishes it **only when the reservation was
+  `confirmed`**, after the Kafka events. A publish failure is logged
+  (`reservation.cancel_notification_publish_failed`) and never fails the
+  cancel.
+- **notification-worker:** `renderCancellationEmail` (same layout: intro,
+  reservation ID, location, address, date/time, then `Cancelled at` in the
+  location's time), and the sender handles the new queue. The worker loads
+  the booking details from Postgres, as for the other emails.
+- `docs/architecture.md` §4 lists the new message.
+
+### Things worth knowing
+
+- **When it's sent:** a confirmed booking cancelled by the user or by an
+  admin. **Not** for a hold cancelled before confirming, or for a confirm
+  refused because the slot is full: the user was never told they had a
+  booking, and the slot-full case is answered immediately with a 409.
+- **"Cancelled by our staff" comes from the caller's token, not
+  `dto.reason`.** It's an admin cancelling someone else's booking. Found
+  along the way: `cancelReason` is client-chosen and not checked against
+  the role, so a user can store `admin_cancelled` on their own booking and
+  an admin who omits it stores `user_cancelled`. The email ignores it; the
+  stored value is unchanged (separate decision, not made here).
+- **Order across queues isn't guaranteed.** Each email type has its own
+  queue, consumed in parallel; in the live test the cancellation (sent
+  milliseconds after confirming) went out before the confirmation. Fine at
+  human speed, but a confirmation that fails and is retried later could
+  arrive after its cancellation.
+- **The e2e suite now refuses to start while a dev `api` or
+  `notification-worker` is running** (`test/e2e/dev-apps-guard.ts`, called
+  from `global-setup.ts`). It has its own database but shares Redis,
+  RabbitMQ and Kafka with the dev apps:
+  - a running dev api fails the two hold-expiry tests: both apps' reapers
+    get the same Redis expiry event and each returns the spot (expected 1,
+    got 2);
+  - a running dev worker takes the tests' messages, can't find their users
+    in the dev database, and dead-letters them. That's where the 40
+    messages in each DLQ came from. It never sends anything, since it
+    reads the dev database.
+  The guard identifies the apps by their `/health` response (not just an
+  open port) and fails within seconds with a message naming them.
+  `E2E_ALLOW_RUNNING_APPS=1 npm run test:e2e` skips it for one run; it's
+  read before `.env` is loaded, on purpose, so it can't be switched off
+  permanently from `.env`. A dev event-consumer is harmless and not
+  checked.
+
+### Verified
+
+- `tsc --noEmit` clean. `npm test`: 106 unit tests (2 new: user-cancelled
+  and staff-cancelled wording, the exact line order). `npm run test:e2e`:
+  86 tests (1 new), with assertions that a confirmed cancel publishes
+  exactly one cancellation email (`user_cancelled`), a cancelled hold
+  publishes none, a repeated cancel publishes one, an admin cancel says
+  `admin_cancelled`, and a user sending `reason: admin_cancelled` still
+  gets `user_cancelled`.
+- The guard: with the dev api and worker running, `npm run test:e2e`
+  stopped after ~4s naming both; with only the api, naming the api; with
+  neither, all 86 tests passed.
+- Live through real Resend: the owner's address booked, confirmed and
+  cancelled (confirmation, receipt, cancellation all delivered), and
+  `delivered@resend.dev` booked and confirmed, then an admin cancelled it
+  (all delivered).
+- The e2e runs' leftover messages were purged from the four main queues
+  before the dev worker restarted, so they weren't dead-lettered.
+
+### Current environment state (as of pausing)
+
+- Dev containers and the dev api/worker are running with this change.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -2124,11 +2204,10 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
 
 **Can wait** (none of these block the work above):
 
-- **Cancellation email**: cancelling (user or admin), or a confirm refused
-  because the slot is full (`slot_full`), sends no email. Only a Kafka
-  `ReservationCancelled` is published. Needs a new notification queue, a
-  template in the Step 23 layout, and publishing from both cancel paths in
-  the api.
+- **Who-cancelled in `cancelReason`** (Step 27): the client chooses
+  `user_cancelled`/`admin_cancelled` and it isn't checked against the
+  caller's role. Deriving it on the server would make the stored reason
+  trustworthy.
 - **Email polish** (Step 23): the emails are plain one-paragraph-per-line
   text and HTML with no branding, and there is no unsubscribe or
   notification preference. The DLQs have no alerting or replay tooling yet.
