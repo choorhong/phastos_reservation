@@ -3,6 +3,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ObservabilityModule } from '@lib/common';
 import { AppConfigModule } from '@lib/config';
 import { DatabaseModule } from '@lib/database';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { EventsModule } from './modules/events/events.module';
 import { HealthController } from './modules/health/health.controller';
@@ -23,6 +24,7 @@ import { SlotsModule } from './modules/slots/slots.module';
     NotificationsModule,
     EventsModule,
     ReservationsModule,
+    AuditModule,
   ],
   controllers: [HealthController],
 })

@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppConfigModule, AppConfigService } from '@lib/config';
-import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
+import { Location, ProcessedEvent, Reservation, ReservationAudit, Slot, User } from './entities';
 
 /**
  * Postgres is the source of truth (docs/architecture.md §1/§5). `synchronize: false`
@@ -22,11 +22,11 @@ import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
         username: config.get('POSTGRES_USER'),
         password: config.get('POSTGRES_PASSWORD'),
         database: config.get('POSTGRES_DB'),
-        entities: [Location, Slot, Reservation, ProcessedEvent, User],
+        entities: [Location, Slot, Reservation, ProcessedEvent, User, ReservationAudit],
         synchronize: false,
       }),
     }),
-    TypeOrmModule.forFeature([Location, Slot, Reservation, ProcessedEvent, User]),
+    TypeOrmModule.forFeature([Location, Slot, Reservation, ProcessedEvent, User, ReservationAudit]),
   ],
   exports: [TypeOrmModule],
 })

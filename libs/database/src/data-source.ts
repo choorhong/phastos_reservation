@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import { environmentVariables } from '@lib/config';
-import { Location, ProcessedEvent, Reservation, Slot, User } from './entities';
+import { Location, ProcessedEvent, Reservation, ReservationAudit, Slot, User } from './entities';
 
 /**
  * Used by the TypeORM CLI (`npm run typeorm -- migration:run -d libs/database/src/data-source.ts`)
@@ -16,7 +16,7 @@ export const AppDataSource = new DataSource({
   username: environmentVariables.POSTGRES_USER,
   password: environmentVariables.POSTGRES_PASSWORD,
   database: environmentVariables.POSTGRES_DB,
-  entities: [Location, Slot, Reservation, ProcessedEvent, User],
+  entities: [Location, Slot, Reservation, ProcessedEvent, User, ReservationAudit],
   migrations: [__dirname + '/../migrations/*.{ts,js}'],
   synchronize: false,
 });
