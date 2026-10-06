@@ -4,6 +4,14 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Re-run (and so re-deploy) master by hand: Actions > CI > Run workflow.
+  workflow_dispatch:
+
+# Pushing images and deploying need the AWS setup from
+# deploy/aws-setup.yml plus two repository variables (Settings > Secrets
+# and variables > Actions > Variables): AWS_REGION and AWS_DEPLOY_ROLE_ARN.
+# Until AWS_DEPLOY_ROLE_ARN is set, images are only built and nothing is
+# deployed, exactly as before. See docs/deployment.md, "Automatic deploys".
 
 jobs:
   test:
@@ -50,20 +58,68 @@ jobs:
   docker-build:
     name: Build ${{ matrix.app }} image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC token, exchanged for AWS credentials
+    env:
+      PUSH: ${{ github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ROLE_ARN != '' }}
     strategy:
       matrix:
-        app: [api, notification-worker, event-consumer]
+        include:
+          - { app: api, file: apps/api/Dockerfile, target: runtime }
+          - { app: notification-worker, file: apps/notification-worker/Dockerfile, target: runtime }
+          - { app: event-consumer, file: apps/event-consumer/Dockerfile, target: runtime }
+          # One-shot migrations image (docker-compose.prod.yml `migrate`).
+          - { app: migrate, file: apps/api/Dockerfile, target: migrate }
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      # Build-only, no push -- confirms each Dockerfile still produces a
-      # working image (both stages, including the runtime `npm ci
-      # --omit=dev`) without needing a registry or credentials.
+      - if: env.PUSH == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - if: env.PUSH == 'true'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # On pull requests (or before AWS is set up) this only confirms each
+      # Dockerfile still produces a working image. On master it also pushes
+      # the image to ECR, tagged with the commit, for the deploy job below.
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: apps/${{ matrix.app }}/Dockerfile
-          push: false
-          tags: phastos-${{ matrix.app }}:ci
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.PUSH == 'true' && format('{0}/phastos-{1}:{2}', steps.ecr.outputs.registry, matrix.app, github.sha) || format('phastos-{0}:ci', matrix.app) }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  deploy:
+    name: Deploy to EC2
+    needs: [test, docker-build]
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # One deploy at a time; a newer push waits rather than cancelling a
+    # deploy that's halfway through.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Runs deploy/deploy.sh on the instance tagged App=phastos through
+      # Systems Manager: no SSH, no open inbound port, no stored keys.
+      - run: deploy/ssm-deploy.sh "$GITHUB_SHA" phastos

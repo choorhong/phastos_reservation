@@ -3,6 +3,12 @@
 #
 #   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
 #
+# Normally deploys don't build here: CI pushes the app images to ECR and
+# deploy/deploy.sh pulls them (docs/deployment.md, "Automatic deploys").
+# The image names come from IMAGE_REGISTRY (in .env.production) and
+# IMAGE_TAG (the commit, set by deploy.sh). Unset, they fall back to
+# local/phastos-<app>:latest, which `--build` produces on the host.
+#
 # Differences from the dev docker-compose.yml:
 #  - Nothing is published on the host's public interfaces. Postgres, Redis,
 #    RabbitMQ and Kafka are reachable only on the compose network; the api is
@@ -110,7 +116,7 @@ services:
   migrate:
     logging: *logging
     build: { context: ., dockerfile: apps/api/Dockerfile, target: migrate }
-    image: phastos-migrate:latest
+    image: ${IMAGE_REGISTRY:-local}/phastos-migrate:${IMAGE_TAG:-latest}
     env_file: .env.production
     restart: "no"
     depends_on:
@@ -119,7 +125,7 @@ services:
   api:
     <<: *app
     build: { context: ., dockerfile: apps/api/Dockerfile }
-    image: phastos-api:latest
+    image: ${IMAGE_REGISTRY:-local}/phastos-api:${IMAGE_TAG:-latest}
     ports: ["127.0.0.1:${API_PORT:?set in .env.production}:${API_PORT}"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:$${API_PORT}/health || exit 1"]
@@ -131,7 +137,7 @@ services:
   notification-worker:
     <<: *app
     build: { context: ., dockerfile: apps/notification-worker/Dockerfile }
-    image: phastos-notification-worker:latest
+    image: ${IMAGE_REGISTRY:-local}/phastos-notification-worker:${IMAGE_TAG:-latest}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:$${NOTIFICATION_WORKER_PORT}/health || exit 1"]
       interval: 15s
@@ -142,7 +148,7 @@ services:
   event-consumer:
     <<: *app
     build: { context: ., dockerfile: apps/event-consumer/Dockerfile }
-    image: phastos-event-consumer:latest
+    image: ${IMAGE_REGISTRY:-local}/phastos-event-consumer:${IMAGE_TAG:-latest}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:$${EVENT_CONSUMER_PORT}/health || exit 1"]
       interval: 15s

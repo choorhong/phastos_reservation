@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Phastos auto-deploy, one-time setup (docs/deployment.md, "Automatic
+  deploys"): ECR repositories for the four images, the role GitHub Actions
+  assumes through OIDC (push images, send the deploy command), and the EC2
+  instance role (Systems Manager + pull images).
+
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: choorhong/phastos_reservation
+    Description: owner/name of the GitHub repository allowed to deploy.
+  DeployBranch:
+    Type: String
+    Default: master
+    Description: Only workflow runs on this branch can assume the deploy role.
+  CreateGitHubOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >-
+      An AWS account can have only one GitHub OIDC provider. Set to false if
+      token.actions.githubusercontent.com already exists under IAM >
+      Identity providers.
+  InstanceTagValue:
+    Type: String
+    Default: phastos
+    Description: >-
+      The deploy role may only run commands on instances tagged
+      App=<this value>. Give the EC2 instance that tag.
+  ImagesToKeep:
+    Type: Number
+    Default: 10
+    MinValue: 2
+    Description: How many recent images to keep per repository (older ones are deleted).
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref CreateGitHubOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  # One repository per image. Names must match docker-compose.prod.yml's
+  # `${IMAGE_REGISTRY}/phastos-<app>:${IMAGE_TAG}` and the CI matrix.
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: phastos-api
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub '{"rules":[{"rulePriority":1,"description":"Keep the last ${ImagesToKeep} images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":${ImagesToKeep}},"action":{"type":"expire"}}]}'
+  NotificationWorkerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: phastos-notification-worker
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub '{"rules":[{"rulePriority":1,"description":"Keep the last ${ImagesToKeep} images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":${ImagesToKeep}},"action":{"type":"expire"}}]}'
+  EventConsumerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: phastos-event-consumer
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub '{"rules":[{"rulePriority":1,"description":"Keep the last ${ImagesToKeep} images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":${ImagesToKeep}},"action":{"type":"expire"}}]}'
+  MigrateRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: phastos-migrate
+      ImageScanningConfiguration: { ScanOnPush: true }
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub '{"rules":[{"rulePriority":1,"description":"Keep the last ${ImagesToKeep} images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":${ImagesToKeep}},"action":{"type":"expire"}}]}'
+
+  # Assumed by .github/workflows/ci.yml. Short-lived credentials only, and
+  # only for runs on DeployBranch of GitHubRepository.
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: phastos-github-deploy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              # !Ref (when this stack creates the provider) also makes
+              # CloudFormation create the provider before this role.
+              Federated: !If
+                - CreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:ref:refs/heads/${DeployBranch}'
+      Policies:
+        - PolicyName: push-images-and-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource:
+                  - !GetAtt ApiRepository.Arn
+                  - !GetAtt NotificationWorkerRepository.Arn
+                  - !GetAtt EventConsumerRepository.Arn
+                  - !GetAtt MigrateRepository.Arn
+              - Sid: RunDeployCommandOnTaggedInstances
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+                Condition:
+                  StringEquals:
+                    ssm:resourceTag/App: !Ref InstanceTagValue
+              - Sid: UseRunShellScriptDocument
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript'
+              - Sid: FollowDeployCommand
+                Effect: Allow
+                Action:
+                  - ssm:ListCommands
+                  - ssm:ListCommandInvocations
+                  - ssm:GetCommandInvocation
+                Resource: '*'
+
+  # Attach to the EC2 instance (launch wizard: Advanced details > IAM
+  # instance profile). Lets the SSM agent receive the deploy command and the
+  # deploy script pull images from ECR, with no keys on the server.
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: phastos-ec2
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly'
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: phastos-ec2
+      Roles: [!Ref InstanceRole]
+
+Outputs:
+  DeployRoleArn:
+    Description: GitHub repository variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt GitHubDeployRole.Arn
+  ImageRegistry:
+    Description: IMAGE_REGISTRY in .env.production on the server
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+  InstanceProfileName:
+    Description: IAM instance profile to attach to the EC2 instance
+    Value: !Ref InstanceProfile
