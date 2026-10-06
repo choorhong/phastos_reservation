@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 27 (cancellation email); next up is an audit log in `event-consumer`
+## Status: paused after Step 28 (server-set cancel reason); next up is an audit log in `event-consumer`
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2092,6 +2092,36 @@ Closes the "Cancellation email" item from "Can wait".
 
 - Dev containers and the dev api/worker are running with this change.
 
+## Step 28 — The server records who cancelled ✅
+
+Closes the "Who-cancelled in `cancelReason`" item from "Can wait" (found in
+Step 27).
+
+### What changed
+
+- **`POST /reservations/:id/cancel` takes no body.** `cancelReason` is set
+  from the caller's token: `admin_cancelled` when an admin cancels someone
+  else's reservation, otherwise `user_cancelled`, including an admin
+  cancelling their own. `CancelReservationDto` is deleted, and the
+  operation's Swagger description says so.
+- **Backward compatible:** the global `ValidationPipe` has
+  `whitelist: true` (no `forbidNonWhitelisted`), so a `reason` sent by an
+  older client is stripped, not rejected. The cancel succeeds and the
+  field is ignored.
+- The cancellation email now uses the stored `cancelReason` directly
+  (Step 27 had worked it out separately from the token).
+- The stored value also feeds the Kafka `ReservationCancelled.reason`, so
+  downstream consumers now get a trustworthy who-cancelled too.
+
+### Verified
+
+- `tsc --noEmit` clean; 106 unit tests; e2e 87 (1 new). Changed or added:
+  a client-sent `reason: hold_expired` is ignored (200, `user_cancelled`;
+  it was a 400 before); an admin cancelling someone else's booking with
+  no body gets `admin_cancelled`; a user sending `admin_cancelled` gets
+  `user_cancelled`, stored and emailed; an admin cancelling their own
+  booking gets `user_cancelled`.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -2204,10 +2234,6 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
 
 **Can wait** (none of these block the work above):
 
-- **Who-cancelled in `cancelReason`** (Step 27): the client chooses
-  `user_cancelled`/`admin_cancelled` and it isn't checked against the
-  caller's role. Deriving it on the server would make the stored reason
-  trustworthy.
 - **Email polish** (Step 23): the emails are plain one-paragraph-per-line
   text and HTML with no branding, and there is no unsubscribe or
   notification preference. The DLQs have no alerting or replay tooling yet.
