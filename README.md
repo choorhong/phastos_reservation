@@ -51,4 +51,6 @@ npm run test:e2e              # boots the real api against docker-compose servic
 - [Kafka event design](docs/kafka.md): topic, partitioning and event types
 - [Deployment](docs/deployment.md): running everything on one EC2 instance
   with `docker-compose.prod.yml`
+- [Deployment on DigitalOcean](docs/deployment-digitalocean.md): the same
+  stack on a Droplet, with GHCR images, SSH deploys and backups to R2
 - [Progress log](docs/progress.md): step-by-step build log, gotchas and how-tos

@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Runs ON THE SERVER: pulls the images for one commit and (re)starts the
-# production stack with them. CI calls it through AWS Systems Manager after
-# checking out that commit (deploy/ssm-deploy.sh); it can also be run by
-# hand to deploy or roll back to any commit CI has pushed images for:
+# production stack with them. CI calls it after checking out that commit:
+# over SSH through deploy/ssh-entry.sh (DigitalOcean), or through AWS Systems
+# Manager with deploy/ssm-deploy.sh (AWS). It can also be run by hand to
+# deploy or roll back to any commit CI has pushed images for:
 #
 #   git fetch && git checkout --detach <commit> && ./deploy/deploy.sh <commit>
 #
 # Reads from .env.production:
-#   IMAGE_REGISTRY    where CI pushes the images, e.g.
-#                     123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
+#   IMAGE_REGISTRY    where CI pushes the images: ghcr.io/<owner>, or an
+#                     ECR registry like 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com
+#
+# From the environment (optional): GHCR_USER and GHCR_TOKEN, to log in to
+# ghcr.io for the pull; ssh-entry.sh passes CI's short-lived token. Not
+# needed if the images are public.
 #   COMPOSE_PROFILES  optional; "proxy" to run the bundled Caddy
 #
 # On success it records the commit in .env.deployed (IMAGE_TAG=<commit>),
@@ -42,8 +47,19 @@ compose() {
   docker compose -f docker-compose.prod.yml --env-file .env.production --env-file .env.deployed "$@"
 }
 
+if [[ $registry == ghcr.io/* && -n ${GHCR_TOKEN:-} ]]; then
+  printf '%s' "$GHCR_TOKEN" |
+    docker login ghcr.io --username "${GHCR_USER:-github-actions}" --password-stdin >/dev/null
+fi
+
 echo "Pulling images for $tag"
 compose pull --quiet
+
+# CI's token expires when its job ends. Don't leave it saved in Docker's
+# config, or later pulls would send an expired token and be refused.
+if [[ $registry == ghcr.io/* && -n ${GHCR_TOKEN:-} ]]; then
+  docker logout ghcr.io >/dev/null
+fi
 
 # --wait: fail the deploy (and so the CI job) unless every service ends up
 # healthy -- `migrate` must exit 0 before the apps even start.

@@ -1,5 +1,16 @@
 # Deployment (single EC2 instance, self-hosted services)
 
+> **CI currently deploys to DigitalOcean**, not AWS: it pushes images to
+> GitHub Container Registry and deploys over SSH
+> (`docs/deployment-digitalocean.md`, Step 30 in `docs/progress.md`). The
+> sections here that describe ECR pushes and the "Deploy to EC2" job
+> (0, 5 "First start" and 7) are the AWS path as it was in Step 25. To use
+> AWS again, bring back those CI steps from commit `31ee695`
+> (`.github/workflows/ci.yml`); `deploy/aws-setup.yml`,
+> `deploy/ssm-deploy.sh` and the ECR login in `deploy/deploy.sh` are still
+> here. Everything else in this file (configuration, HTTPS, checking,
+> restore, day to day) applies to both.
+
 Everything runs on one host with Docker Compose (`docker-compose.prod.yml`):
 the three apps, plus Postgres, Redis, RabbitMQ and Kafka in containers next
 to them. This is the simplest setup that works. Its main limitation is that
