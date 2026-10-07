@@ -37,10 +37,24 @@ addresses. Apply it to the Droplet. Port 22 has to accept GitHub's runners,
 whose addresses change; logins are key-only, and CI's key can only deploy
 (section 5).
 
-**Alerts** (free): Monitoring → Create alert policy, for the Droplet, by
-email: **Disk utilization > 80%**, **Memory utilization > 85%**, **CPU >
-90% for 10 minutes**. DigitalOcean also emails you if the Droplet goes down
-for maintenance or host failure.
+**Alerts** (free), by email. The metrics agent (`do-agent`, installed by
+the "improved metrics monitoring" option; check with
+`systemctl is-active do-agent`) must be running, or memory and disk alerts
+never fire.
+
+- **Resource alerts** (Monitoring → Resource alerts → Create resource
+  alert, for the Droplet): **Disk utilization > 80%** for 5 minutes,
+  **Memory utilization > 85%** for 5 minutes, **CPU > 90%** for 10 minutes.
+  There is no "Droplet is running" option in the current UI; the uptime
+  check below covers it.
+- **Uptime check** (Monitoring → Uptime): `https://api.phastos.app/health`,
+  alert when it has been down for **2 minutes or more**. Anything shorter
+  would email you after every deploy, which restarts the api for a few
+  seconds.
+
+DigitalOcean also emails you if the Droplet goes down for maintenance or
+host failure. Nothing monitors failed emails or failed backups yet: check
+`~/phastos-backup.log` and the notification dead-letter queues by hand.
 
 The Droplet keeps its public IPv4 address for as long as it exists, so a
 Reserved IP is optional.
@@ -240,6 +254,55 @@ git fetch && git checkout --detach <commit> && ./deploy/deploy.sh <commit>
 
 GHCR keeps every pushed image until you delete it (no 10-image limit as on
 ECR). Delete old versions from the package page now and then.
+
+## Pausing and shutting down
+
+**Powering off a Droplet does not stop the billing:** the machine stays
+reserved for you. Only **destroying** it stops the charges, and that
+deletes everything on it, including the database. So take a copy of the
+data first, in either case.
+
+### Pausing
+
+| Option | Saves money? | Notes |
+|---|---|---|
+| `dcp stop` on the server | No | Takes the app offline, keeps the Droplet and its data. For a short maintenance window. |
+| Power off in the console | **No** | Still billed. Not worth it. |
+| **Snapshot, then destroy** | Yes, except the snapshot's storage (a few cents per GB per month) | Later, create a Droplet from the snapshot: everything comes back as it was. |
+| **Final backup, then destroy** | Yes, the most | Later, rebuild from this runbook (about 30 minutes) and restore the dump (`deployment.md` section 8, with R2's endpoint as in section 7 above). Needs the R2 backups set up first. |
+
+A Droplet created from a snapshot, or rebuilt, gets a **new IPv4 address**.
+Then update the `api` DNS record, the `DEPLOY_HOST` variable and the IP in
+the `DEPLOY_KNOWN_HOSTS` secret. A snapshot keeps the server's SSH host
+key, so only the IP in that line changes; a rebuilt server has a new host
+key, so scan it again (section 5).
+
+Switch these off while the server is down:
+
+- **`DEPLOY_HOST`** (GitHub variable): clear or delete it. The Deploy job
+  only runs when it's set, so merges into `master` keep passing instead of
+  failing to reach a server that doesn't exist.
+- **The uptime check and any alerts**, or they email you continuously.
+  Alerts tied to the Droplet go with it; the uptime check doesn't.
+- **The `api` DNS record**, when the Droplet is destroyed. Once its IP is
+  released, another DigitalOcean customer can be given it, and a record
+  still pointing there would send `api.phastos.app` to their server.
+
+### No longer needed
+
+1. **Take a final backup** and keep a copy you control (the R2 bucket, or
+   download the dump).
+2. **Destroy the Droplet** and any snapshots you don't need.
+3. **Remove the `api` DNS record.**
+4. **GitHub:** delete the secrets `DEPLOY_SSH_KEY` and
+   `DEPLOY_KNOWN_HOSTS`, and the variables `DEPLOY_HOST` and `DEPLOY_USER`.
+5. **Remove the uptime check** in DigitalOcean.
+6. **Revoke the production Resend key** (Resend → API Keys).
+
+Optional: delete the AWS stack `phastos-setup` if you won't use AWS again
+(it costs almost nothing; its backup bucket is kept on purpose when the
+stack is deleted, so remove that separately). GitHub, GHCR and Cloudflare
+cost nothing while idle; the domain renews yearly.
 
 ## If the deploy job fails
 

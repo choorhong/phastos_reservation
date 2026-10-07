@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: live on DigitalOcean (Step 31); next up is backups to R2
+## Status: live on DigitalOcean with monitoring (Step 31); next up is backups to R2
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2263,7 +2263,7 @@ the backup store differ.
   and the internal ports don't (nothing deployed yet). Server setup, DNS
   record, deploy key and GitHub secrets/variables not done yet.
 
-## Step 31 — Live on DigitalOcean; develop → master release flow ✅ (on `develop`, not yet in `master`)
+## Step 31 — Live on DigitalOcean; develop → master release flow, monitoring ✅
 
 ### First deploy (commit `7a7d554`)
 
@@ -2297,12 +2297,50 @@ the backup store differ.
 - Pushes to `develop` deliberately run no CI (user's choice): problems
   show up when the pull request is opened, not on each push.
 
+### The `master` ruleset and the first release through the flow
+
+- Ruleset `protect-master` (active, no bypass list): restrict deletions,
+  block force pushes, pull request required (0 approvals, **merge commit**
+  the only allowed method), and five required checks: `Typecheck, unit +
+  e2e tests` and the four `Build … image` jobs. The `Deploy` check is not
+  required: it's skipped on pull requests.
+- **My mistake, caught by reading the live rules back** (public API,
+  `GET /repos/…/rules/branches/master`): I listed the five check names
+  comma-separated, and one name itself contains a comma, so the first
+  version of the ruleset had a single check with the whole list as its
+  name, which CI never reports, and a PR would have waited on it forever.
+  Fixed to five separate checks and re-verified against the job names of a
+  real run. Reading rules back from the API is worth doing after any
+  ruleset edit.
+- A direct push to `master` was refused (the rule works). Local `master`
+  had been "ahead 2" with the same two commits as `develop`, so nothing was
+  lost; both local branches were later fast-forwarded to the merge commit.
+- `gh` (GitHub CLI) installed with Homebrew and signed in; PR #1 was
+  opened with it. Merging stays a manual decision, since a merge deploys.
+- **PR #1 (`develop` → `master`)**, merge commit `ec892f1`: all five checks
+  green, then merged; tests 1m23s, images ~45s each, Deploy 54 s;
+  `https://api.phastos.app/health` 200 afterwards.
+
+### Monitoring
+
+- DigitalOcean metrics agent running (`do-agent`).
+- Resource alerts by email: disk > 80%, memory > 85% (5 min each), CPU > 90%
+  (10 min). No "Droplet is running" option exists in the current UI.
+- Uptime check on `https://api.phastos.app/health`, alert after 2+ minutes
+  down (so a deploy's few seconds of downtime don't trigger it).
+- Runbook sections added: "Pausing and shutting down" (powering off still
+  bills; snapshot or backup then destroy; what to switch off; a
+  no-longer-needed checklist).
+
 ### Current environment state (as of pausing)
 
-- Production is live on the Droplet, running `7a7d554`.
-- **Not done yet:** backups to R2 (section 7), removing `ADMIN_EMAIL` /
-  `ADMIN_PASSWORD` from the server's `.env.production`, DigitalOcean
-  alerts, and the `master` ruleset.
+- Production is live on the Droplet, running `ec892f1`.
+- **Not done yet:** backups to R2 (section 7: the bucket, `.env.backup`, a
+  manual `./deploy/backup.sh`, the cron line), removing `ADMIN_EMAIL` /
+  `ADMIN_PASSWORD` from the server's `.env.production`. Until the backups
+  exist, production has none.
+- Docs changes since `ec892f1` are on `develop` only (uncommitted), to
+  release together with the R2 docs so production restarts once.
 
 ## Gotchas hit and fixed along the way
 
