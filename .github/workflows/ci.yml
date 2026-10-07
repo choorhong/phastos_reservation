@@ -2,11 +2,11 @@ name: CI
 
 # Work happens on develop; master only changes through pull requests from
 # develop, and every merge into master deploys (docs/deployment-digitalocean.md,
-# "Release flow"). Pushes to develop and pull requests run the tests and
-# image builds only.
+# "Release flow"). Pushes to develop run nothing; a pull request runs the
+# tests and image builds as its checks.
 on:
   push:
-    branches: [master, develop]
+    branches: [master]
   pull_request:
   # Re-run (and so re-deploy) master by hand: Actions > CI > Run workflow.
   workflow_dispatch:

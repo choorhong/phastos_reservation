@@ -2287,15 +2287,15 @@ the backup store differ.
 
 ### Release flow
 
-- New branch **`develop`**. CI now also runs on pushes to `develop` (tests
-  + image builds only); image pushes and the deploy stay limited to
-  `master`. `master` changes through pull requests from `develop`, merged
-  with a merge commit; every merge deploys.
+- New branch **`develop`**. Pushes to it run nothing; a pull request from
+  `develop` into `master` runs the tests and image builds as its checks
+  (again on each new push while it's open). `master` changes only through
+  those pull requests, merged with a merge commit; every merge deploys.
 - `docs/deployment-digitalocean.md` gets a "Release flow" section,
   including a ruleset for `master` (require a PR and the CI checks, block
   force pushes).
-- A pull request from `develop` runs CI twice (the push and the pull
-  request). Harmless, just duplicate work.
+- Pushes to `develop` deliberately run no CI (user's choice): problems
+  show up when the pull request is opened, not on each push.
 
 ### Current environment state (as of pausing)
 

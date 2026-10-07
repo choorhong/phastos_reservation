@@ -212,8 +212,8 @@ from `develop`, and every merge into `master` deploys.
 
 | Event | CI |
 |---|---|
-| Push to `develop` | tests + image builds only |
-| Pull request `develop` → `master` | tests + image builds, shown as checks on the PR |
+| Push to `develop` | nothing |
+| Pull request `develop` → `master` | tests + image builds, shown as checks on the PR (re-run on every new push to `develop` while the PR is open) |
 | Merge into `master` | tests, images pushed to GHCR, **deploy** |
 
 To release: open a pull request from `develop` into `master`
