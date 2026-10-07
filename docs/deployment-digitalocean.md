@@ -157,13 +157,14 @@ healthy, then logs out again. The job's log shows the output.
 Then check it as in `deployment.md` section 6
 (`curl -s https://api.phastos.app/health`).
 
-**Images on GHCR** are private by default. Deploys don't need them public:
-the deploy job's token can read them. A hand-run rollback or `dcp pull` on
-the server can't, though, because that token has expired by then. Either
-make the four packages public (GitHub → your profile → Packages →
-`phastos-…` → Package settings → Change visibility: the repository is
-public and the images contain no secrets), or run `docker login ghcr.io`
-on the server with a personal access token that has only `read:packages`.
+**Images on GHCR** came out **public**, taking the repository's visibility
+(checked: anonymous pulls of all four work). That's fine, since the
+repository is public and the images contain no secrets, and it means a
+hand-run rollback or `dcp pull` on the server needs no login. If you ever
+make them private (Package settings → Change visibility), deploys still
+work through the job's token, but hand-run pulls then need
+`docker login ghcr.io` with a personal access token that has only
+`read:packages`.
 
 ## 7. Backups to Cloudflare R2
 

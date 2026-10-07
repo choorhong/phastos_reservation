@@ -2231,9 +2231,10 @@ the backup store differ.
 - **The deploy key can deploy any commit that exists on `origin`**, not
   only `master`'s latest. Only CI holds it, and it always sends its own
   `$GITHUB_SHA`.
-- **GHCR packages start private.** Deploys work anyway (the job token
-  reads them); hand-run pulls on the server need the packages made public
-  or a `read:packages` token.
+- **The GHCR packages came out public**, inheriting the public repository's
+  visibility (checked after the first push: anonymous manifest fetches of
+  all four return 200). So hand-run pulls on the server need no login.
+  Deploys would also work with private packages, through the job token.
 - **R2 tokens that write can also delete**, unlike the AWS instance role
   (Step 26). R2 bucket lock rules can add that protection.
 - The AWS stack (`phastos-setup`) is left in place; it costs close to
@@ -2251,8 +2252,10 @@ the backup store differ.
 - `backup.sh` with stand-in `docker` and `aws`: with `.env.backup` it calls
   `aws s3 cp --endpoint-url https://….r2.cloudflarestorage.com --region auto`
   with the keys from the file; with no bucket anywhere it exits 1.
-- **Not tested:** the real GHCR push (first `master` run after this
-  commit), the SSH deploy against a real Droplet, and real R2 uploads.
+- The real GHCR push: the first `master` run after this step (`cf5c27e`)
+  pushed all four images, tagged with the commit.
+- **Not tested yet:** the SSH deploy against the real Droplet, and real R2
+  uploads.
 
 ### Current environment state (as of pausing)
 
