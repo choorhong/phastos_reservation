@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 29 (audit log); next up is launching on EC2 (waiting on AWS account verification), then CloudWatch logs and alarms
+## Status: paused after Step 30 (deploys switched to DigitalOcean); next up is the Droplet and the first deploy
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2180,6 +2180,86 @@ Gives `event-consumer` a real job (it only deduped and logged before).
 - The dev database has the new migration applied. Dev api,
   notification-worker and event-consumer are running.
 
+## Step 30 — Switch deploys to DigitalOcean: GHCR images, SSH deploys, R2 backups ✅
+
+The AWS account is still blocked from launching EC2 (Step 25), so the
+server moves to a DigitalOcean Droplet. The compose file, Caddy, migrations
+and runbook steps are unchanged; only the registry, the deploy channel and
+the backup store differ.
+
+### What changed
+
+- **CI** (`.github/workflows/ci.yml`): images go to **GitHub Container
+  Registry**, `ghcr.io/<owner>/phastos-<app>:<commit>`, pushed on every
+  `master` run with the workflow's own `GITHUB_TOKEN` (`packages: write`);
+  nothing to set up. The ECR/OIDC steps are gone. The **Deploy** job runs
+  only once the `DEPLOY_HOST` variable exists, and SSHes to
+  `DEPLOY_USER@DEPLOY_HOST` with secrets `DEPLOY_SSH_KEY` and
+  `DEPLOY_KNOWN_HOSTS` (strict host key checking), sending
+  `deploy <commit>` with the job's user and token on stdin
+  (`packages: read`).
+- **`deploy/ssh-entry.sh`** (new, server): the deploy key's forced command
+  (`authorized_keys` `command=...,no-pty,no-port-forwarding,...`). It
+  accepts only `deploy <40-hex commit>`, reads the two stdin lines, does
+  `git fetch` + `git checkout --detach`, then execs `deploy.sh`.
+- **`deploy/deploy.sh`**: logs in to ghcr.io when `GHCR_TOKEN` is given,
+  pulls, then **logs out** right away (the CI token expires with the job,
+  and a saved expired token would break later pulls).
+- **`deploy/backup.sh`**: reads an optional **`.env.backup`** (bucket,
+  `BACKUP_S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) and
+  uploads with `--endpoint-url … --region auto` for **Cloudflare R2**.
+  Kept apart from `.env.production` so the keys never reach the app
+  containers. The AWS path (bucket from `.env.production`, region from
+  `IMAGE_REGISTRY`) still works. The temp file name is now portable
+  (`mktemp` only randomises trailing X's on macOS).
+- **Templates:** `.env.production.example` now defaults to
+  `IMAGE_REGISTRY=ghcr.io/choorhong` with `BACKUP_BUCKET` commented out;
+  new `deploy/env.backup.example`.
+- **`docs/deployment-digitalocean.md`** (new): Droplet, firewall, free
+  DigitalOcean alerts (disk, memory, CPU), DNS, server setup with a
+  `deploy` user, the restricted CI deploy key and the GitHub
+  secrets/variables, first deploy, GHCR visibility, R2 backups and restore,
+  rollback, troubleshooting. `docs/deployment.md` now says at the top that
+  CI deploys to DigitalOcean and how to bring the AWS path back (the CI
+  steps from `31ee695`). README links both.
+
+### Things worth knowing
+
+- **Port 22 is open to everyone**, since GitHub's runners have no fixed
+  addresses. Mitigated by key-only logins, and the CI key's forced command
+  (no shell, no forwarding, one validated command).
+- **The deploy key can deploy any commit that exists on `origin`**, not
+  only `master`'s latest. Only CI holds it, and it always sends its own
+  `$GITHUB_SHA`.
+- **GHCR packages start private.** Deploys work anyway (the job token
+  reads them); hand-run pulls on the server need the packages made public
+  or a `read:packages` token.
+- **R2 tokens that write can also delete**, unlike the AWS instance role
+  (Step 26). R2 bucket lock rules can add that protection.
+- The AWS stack (`phastos-setup`) is left in place; it costs close to
+  nothing unused.
+
+### Verified
+
+- `actionlint` (with shellcheck) clean on `ci.yml`; `shellcheck` clean on
+  all scripts.
+- `ssh-entry.sh` in a throwaway clone with a stand-in `deploy.sh`: an empty
+  command, an arbitrary command, `deploy <sha>; rm -rf ~` and a short hash
+  are all refused (exit 2); a valid request checks out the commit and
+  passes the stdin user and token through, and works with empty stdin; an
+  unknown commit fails at checkout (exit 128).
+- `backup.sh` with stand-in `docker` and `aws`: with `.env.backup` it calls
+  `aws s3 cp --endpoint-url https://….r2.cloudflarestorage.com --region auto`
+  with the keys from the file; with no bucket anywhere it exits 1.
+- **Not tested:** the real GHCR push (first `master` run after this
+  commit), the SSH deploy against a real Droplet, and real R2 uploads.
+
+### Current environment state (as of pausing)
+
+- Droplet `phastos` created (SGP1, Ubuntu 24.04); SSH answers, ports 80/443
+  and the internal ports don't (nothing deployed yet). Server setup, DNS
+  record, deploy key and GitHub secrets/variables not done yet.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -2279,20 +2359,19 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: launch on EC2, then CloudWatch
+## Next step: launch on DigitalOcean
 
 **Suggested order:**
 
-1. **Launch on EC2** once AWS finishes verifying the account (Step 25,
-   "Current environment state"): instance, Elastic IP, the `api` DNS
-   record, server setup, then the GitHub variables and the first deploy
-   (`docs/deployment.md` sections 1–7). The backup cron (section 8) right
-   after.
-2. **CloudWatch logs and alarms.** Today nothing alerts if the instance
-   goes down, the disk fills, or emails start dead-lettering, and container
-   logs only live on the instance (capped at 30 MB per service). Ship the
-   logs to CloudWatch Logs, plus alarms by email for the instance status
-   check, disk and memory.
+1. **Launch on DigitalOcean** (`docs/deployment-digitalocean.md`): Droplet,
+   firewall and alerts, the `api` DNS record, server setup, the CI deploy
+   key and GitHub secrets/variables, first deploy, then R2 backups and the
+   cron.
+2. **Logs off the server and error alerts.** DigitalOcean's alerts cover
+   disk, memory and CPU, but container logs only live on the Droplet
+   (capped at 30 MB per service), and nothing alerts when emails start
+   dead-lettering or a backup fails. Options: a hosted log service, or
+   Docker's log driver to one.
 
 **Can wait** (none of these block the work above):
 
