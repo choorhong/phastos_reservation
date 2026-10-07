@@ -205,6 +205,29 @@ aws s3 ls --endpoint-url "$BACKUP_S3_ENDPOINT" --region auto --recursive "s3://$
 aws s3 cp --endpoint-url "$BACKUP_S3_ENDPOINT" --region auto "s3://$BACKUP_BUCKET/postgres/<path>.dump" restore.dump
 ```
 
+## Release flow
+
+Work goes on **`develop`**; **`master`** only changes through pull requests
+from `develop`, and every merge into `master` deploys.
+
+| Event | CI |
+|---|---|
+| Push to `develop` | nothing |
+| Pull request `develop` → `master` | tests + image builds, shown as checks on the PR (re-run on every new push to `develop` while the PR is open) |
+| Merge into `master` | tests, images pushed to GHCR, **deploy** |
+
+To release: open a pull request from `develop` into `master`
+(`https://github.com/choorhong/phastos_reservation/compare/master...develop`),
+wait for the checks, then merge with **Create a merge commit**. Squash or
+rebase merges give `master` different commits from `develop`, so the next
+pull request would show already-released changes again.
+
+Protect `master` (Settings → Rules → Rulesets → New branch ruleset, target
+`master`): require a pull request before merging, require the status
+checks **Typecheck, unit + e2e tests** and the four **Build … image**
+jobs, and block force pushes. Leave yourself out of the bypass list if
+you want the rule to apply to you too.
+
 ## 8. Rolling back
 
 Any commit CI pushed images for, on the server as `deploy` (needs GHCR
