@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: paused after Step 30 (deploys switched to DigitalOcean); next up is the Droplet and the first deploy
+## Status: live on DigitalOcean (Step 31); next up is backups to R2
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2263,6 +2263,47 @@ the backup store differ.
   and the internal ports don't (nothing deployed yet). Server setup, DNS
   record, deploy key and GitHub secrets/variables not done yet.
 
+## Step 31 — Live on DigitalOcean; develop → master release flow ✅ (on `develop`, not yet in `master`)
+
+### First deploy (commit `7a7d554`)
+
+- With `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` set and then
+  `DEPLOY_HOST`, the push of `7a7d554` ran the whole pipeline: tests and
+  the four images (~2 min), then the **Deploy** job over SSH (2 min,
+  including the server's first pull of every image, the migrations and
+  Caddy's certificate). Succeeded first time.
+- Checked from outside: `https://api.phastos.app/health` 200 in 0.13 s;
+  Let's Encrypt certificate for `api.phastos.app` (valid to 2027-01-05,
+  Caddy renews it); `http://` redirects to `https://` (308); `/docs` 200;
+  `GET /reservations` without a token 401; ports 3000, 5432, 6379, 5672,
+  15672 and 9092 closed from outside.
+- Before that: the CI key's forced command tested against the real Droplet
+  (asking it to run `hostname` was refused, exit 2), and the host key
+  fingerprint checked against the one seen on first contact.
+- Used for real afterwards (admin login, a location, bookings, emails):
+  everything worked. Locations need IANA time zones (`America/Chicago` for
+  Omaha, not `America/Central`), and a location's time zone can't be
+  changed after it's created.
+
+### Release flow
+
+- New branch **`develop`**. CI now also runs on pushes to `develop` (tests
+  + image builds only); image pushes and the deploy stay limited to
+  `master`. `master` changes through pull requests from `develop`, merged
+  with a merge commit; every merge deploys.
+- `docs/deployment-digitalocean.md` gets a "Release flow" section,
+  including a ruleset for `master` (require a PR and the CI checks, block
+  force pushes).
+- A pull request from `develop` runs CI twice (the push and the pull
+  request). Harmless, just duplicate work.
+
+### Current environment state (as of pausing)
+
+- Production is live on the Droplet, running `7a7d554`.
+- **Not done yet:** backups to R2 (section 7), removing `ADMIN_EMAIL` /
+  `ADMIN_PASSWORD` from the server's `.env.production`, DigitalOcean
+  alerts, and the `master` ruleset.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -2362,14 +2403,13 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: launch on DigitalOcean
+## Next step: backups to R2
 
 **Suggested order:**
 
-1. **Launch on DigitalOcean** (`docs/deployment-digitalocean.md`): Droplet,
-   firewall and alerts, the `api` DNS record, server setup, the CI deploy
-   key and GitHub secrets/variables, first deploy, then R2 backups and the
-   cron.
+1. **Backups to R2** (`docs/deployment-digitalocean.md` section 7):
+   production is live and has no backups yet. Then the remaining go-live
+   chores in Step 31's "Current environment state".
 2. **Logs off the server and error alerts.** DigitalOcean's alerts cover
    disk, memory and CPU, but container logs only live on the Droplet
    (capped at 30 MB per service), and nothing alerts when emails start
