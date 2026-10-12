@@ -2525,7 +2525,24 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    `POST /auth/login` (password guessing), `register` or
    `POST /reservations`. `@nestjs/throttler` with Redis storage: strict
    limits on auth routes, looser elsewhere. The one real security gap left.
-5. **A booking front end, or the worker e2e tests**, depending on whether
+5. **Admin invite links** (design agreed, not built). Any admin calls
+   `POST /admin/invites { email }`; the notification-worker emails a
+   single-use link (48 h) to `GET /accept-invite?token=…`, a small page the
+   api serves (no front end yet) with a password form posting to
+   `POST /auth/accept-invite { token, password }`, which returns a login
+   token. Token: 32 random bytes, only its hash stored; used/expired/
+   revoked checked and marked in one conditional update, so it can't be
+   used twice. An email that already has an account is promoted to admin
+   on accept, confirming with its current password (unchanged). Also
+   `GET /admin/invites`, `DELETE /admin/invites/:id`, and
+   `admin.invited` / `admin.invite_accepted` audit events. Stays two roles
+   (user/admin). The very first admin still comes from the `.env`
+   bootstrap (or a CLI script) on a new server. The accept endpoint is
+   public, so it needs rate limiting (item 4) first. Roles live in the JWT,
+   so a promoted user gets admin on their next login, and a demoted one
+   keeps it until the token expires. Until this exists, promote with SQL:
+   `UPDATE users SET role = 'admin' WHERE email = '…'`.
+6. **A booking front end, or the worker e2e tests**, depending on whether
    real users are wanted soon. There is no UI yet, only the api and
    Swagger; a simple page (location, date, slot) is a product decision.
    `notification-worker` and `event-consumer` have unit tests only.
