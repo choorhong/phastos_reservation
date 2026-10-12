@@ -2385,14 +2385,17 @@ the backup store differ.
   the line; with another job plus a hand-written backup line, it keeps the
   other job and replaces the backup line; running it twice leaves one
   line. `bash -n` clean (shellcheck isn't installed on this machine).
-- **Not verified yet:** the 30-day lifecycle rule on the renamed bucket, a
-  restore test from R2, and the first scheduled run (after the next
-  deploy, `crontab -l` and the next morning's `~/phastos-backup.log`).
+- Released as PR #2 (merge commit `e98242f`): all checks green, Deploy
+  succeeded with no cron warning, `/health` 200, and `crontab -l` on the
+  Droplet shows the backup line.
+- **Not verified yet:** the first scheduled run (the next morning's
+  `~/phastos-backup.log`), the 30-day lifecycle rule on the renamed
+  bucket, and a restore test from R2.
 
 ### Current environment state (as of pausing)
 
-- Production running `ec892f1`, now with one backup in R2. Step 32's
-  change is on `develop`, to be released through a pull request.
+- Production running `e98242f`, with one backup in R2 and the nightly
+  backup scheduled.
 - Still to do on the server: remove `ADMIN_EMAIL` / `ADMIN_PASSWORD` from
   `.env.production`.
 
