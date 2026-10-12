@@ -320,12 +320,14 @@ so someone who took over the server still couldn't wipe them.
 ```bash
 cd ~/phastos_reservation
 ./deploy/backup.sh               # take one now; ends with "uploaded s3://..."
-crontab -e                       # add the line below
 ```
+
+Every deploy then installs the nightly cron line itself (`deploy/deploy.sh`,
+whenever `BACKUP_BUCKET` is set), replacing any earlier backup line:
 
 ```cron
 # 19:00 UTC = 03:00 in Singapore, every night
-0 19 * * * $HOME/phastos_reservation/deploy/backup.sh >> $HOME/phastos-backup.log 2>&1
+0 19 * * * /home/<user>/phastos_reservation/deploy/backup.sh >> $HOME/phastos-backup.log 2>&1
 ```
 
 `tail ~/phastos-backup.log` shows the latest runs. Nothing alerts on a

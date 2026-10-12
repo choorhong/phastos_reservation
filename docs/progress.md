@@ -6,7 +6,7 @@ this file is just the build log against that plan.
 
 ---
 
-## Status: live on DigitalOcean (Step 31); next up is backups to R2
+## Status: live on DigitalOcean with monitoring (Step 31); next up is backups to R2
 
 ## Decisions locked in (see `docs/architecture.md` "Decisions")
 
@@ -2263,7 +2263,7 @@ the backup store differ.
   and the internal ports don't (nothing deployed yet). Server setup, DNS
   record, deploy key and GitHub secrets/variables not done yet.
 
-## Step 31 — Live on DigitalOcean; develop → master release flow ✅ (on `develop`, not yet in `master`)
+## Step 31 — Live on DigitalOcean; develop → master release flow, monitoring ✅
 
 ### First deploy (commit `7a7d554`)
 
@@ -2297,12 +2297,104 @@ the backup store differ.
 - Pushes to `develop` deliberately run no CI (user's choice): problems
   show up when the pull request is opened, not on each push.
 
+### The `master` ruleset and the first release through the flow
+
+- Ruleset `protect-master` (active, no bypass list): restrict deletions,
+  block force pushes, pull request required (0 approvals, **merge commit**
+  the only allowed method), and five required checks: `Typecheck, unit +
+  e2e tests` and the four `Build … image` jobs. The `Deploy` check is not
+  required: it's skipped on pull requests.
+- **My mistake, caught by reading the live rules back** (public API,
+  `GET /repos/…/rules/branches/master`): I listed the five check names
+  comma-separated, and one name itself contains a comma, so the first
+  version of the ruleset had a single check with the whole list as its
+  name, which CI never reports, and a PR would have waited on it forever.
+  Fixed to five separate checks and re-verified against the job names of a
+  real run. Reading rules back from the API is worth doing after any
+  ruleset edit.
+- A direct push to `master` was refused (the rule works). Local `master`
+  had been "ahead 2" with the same two commits as `develop`, so nothing was
+  lost; both local branches were later fast-forwarded to the merge commit.
+- `gh` (GitHub CLI) installed with Homebrew and signed in; PR #1 was
+  opened with it. Merging stays a manual decision, since a merge deploys.
+- **PR #1 (`develop` → `master`)**, merge commit `ec892f1`: all five checks
+  green, then merged; tests 1m23s, images ~45s each, Deploy 54 s;
+  `https://api.phastos.app/health` 200 afterwards.
+
+### Monitoring
+
+- DigitalOcean metrics agent running (`do-agent`).
+- Resource alerts by email: disk > 80%, memory > 85% (5 min each), CPU > 90%
+  (10 min). No "Droplet is running" option exists in the current UI.
+- Uptime check on `https://api.phastos.app/health`, alert after 2+ minutes
+  down (so a deploy's few seconds of downtime don't trigger it).
+- Runbook sections added: "Pausing and shutting down" (powering off still
+  bills; snapshot or backup then destroy; what to switch off; a
+  no-longer-needed checklist).
+
 ### Current environment state (as of pausing)
 
-- Production is live on the Droplet, running `7a7d554`.
-- **Not done yet:** backups to R2 (section 7), removing `ADMIN_EMAIL` /
-  `ADMIN_PASSWORD` from the server's `.env.production`, DigitalOcean
-  alerts, and the `master` ruleset.
+- Production is live on the Droplet, running `ec892f1`.
+- **Not done yet:** backups to R2 (section 7: the bucket, `.env.backup`, a
+  manual `./deploy/backup.sh`, the cron line), removing `ADMIN_EMAIL` /
+  `ADMIN_PASSWORD` from the server's `.env.production`. Until the backups
+  exist, production has none.
+- Docs changes since `ec892f1` are on `develop` only (uncommitted), to
+  release together with the R2 docs so production restarts once.
+
+## Step 32 — Backups to R2; deploys install the backup cron line ✅
+
+### What changed
+
+- **R2 bucket `phastos-reservation-backups`** with an Object Read & Write
+  token limited to it; keys in the server's `.env.backup` (`chmod 600`) and
+  Bitwarden. The docs and `deploy/env.backup.example` now use this name
+  instead of `phastos-backups`.
+- **`deploy/deploy.sh`** installs the nightly backup cron line itself
+  (`0 19 * * *`, 19:00 UTC = 03:00 Singapore, log in `~/phastos-backup.log`)
+  whenever backups are set up (`.env.backup` exists, or `BACKUP_BUCKET` is
+  in `.env.production` on AWS). It replaces any line mentioning
+  `deploy/backup.sh` and keeps the rest of the crontab, so it's safe on
+  every deploy and a rebuilt server gets the schedule back by itself. A
+  failure only warns: a missing cron line shouldn't fail a deploy that has
+  already restarted the apps.
+- Runbooks: no more `crontab -e` step (`deployment-digitalocean.md`
+  section 7, `deployment.md` section 8).
+
+### Things worth knowing
+
+- **R2 costs nothing at this size**: the free tier is 10 GB-month of
+  Standard storage and 1M Class A operations a month, and egress is
+  free. A dump is 28K today; 30 of them are far below that. Keep the bucket
+  on the **Standard** class: Infrequent Access has no free tier and charges
+  for retrievals. R2 needs a payment method on file even within the free
+  tier.
+- **DigitalOcean's "no backups"** on the Droplet is its own paid
+  whole-disk backup feature, unrelated to R2. Not enabled: the database
+  is the only thing that can't be rebuilt from git, GHCR and Bitwarden,
+  and a `pg_dump` is a consistent copy where a disk image may not be.
+- The cron line only appears after the **next deploy** that includes this
+  change.
+
+### Verified
+
+- First real backup, run by hand on the Droplet: `uploaded
+  s3://phastos-reservation-backups/postgres/2026/10/phastos-20261012T082749Z.dump
+  (28K, 7 tables)`.
+- The crontab logic with a stand-in `crontab`: from no crontab it adds
+  the line; with another job plus a hand-written backup line, it keeps the
+  other job and replaces the backup line; running it twice leaves one
+  line. `bash -n` clean (shellcheck isn't installed on this machine).
+- **Not verified yet:** the 30-day lifecycle rule on the renamed bucket, a
+  restore test from R2, and the first scheduled run (after the next
+  deploy, `crontab -l` and the next morning's `~/phastos-backup.log`).
+
+### Current environment state (as of pausing)
+
+- Production running `ec892f1`, now with one backup in R2. Step 32's
+  change is on `develop`, to be released through a pull request.
+- Still to do on the server: remove `ADMIN_EMAIL` / `ADMIN_PASSWORD` from
+  `.env.production`.
 
 ## Gotchas hit and fixed along the way
 
@@ -2403,13 +2495,14 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: backups to R2
+## Next step: logs off the server and error alerts
 
 **Suggested order:**
 
-1. **Backups to R2** (`docs/deployment-digitalocean.md` section 7):
-   production is live and has no backups yet. Then the remaining go-live
-   chores in Step 31's "Current environment state".
+1. **Finish Step 32:** release it, then check `crontab -l` and the next
+   morning's `~/phastos-backup.log`, confirm the lifecycle rule, run a
+   restore test, and remove `ADMIN_EMAIL` / `ADMIN_PASSWORD` from the
+   server's `.env.production`.
 2. **Logs off the server and error alerts.** DigitalOcean's alerts cover
    disk, memory and CPU, but container logs only live on the Droplet
    (capped at 30 MB per service), and nothing alerts when emails start
@@ -2442,10 +2535,10 @@ reservation. What's left before this is a real system, beyond the list above:
   refuses to start if `JWT_SECRET` (or any other required variable) is
   missing, but it cannot tell a placeholder from a real secret, so a
   copied-over placeholder value still passes.
-- Dockerfiles and a CI workflow exist (Step 20) and pass on GitHub
-  Actions (checked in Step 23). Images are only built in CI, never pushed
-  to a registry. A production compose file and an EC2 runbook exist
-  (Step 24, `docs/deployment.md`), but nothing has been deployed yet.
+- Deployed on a DigitalOcean Droplet (Steps 30–31): CI pushes images to
+  GHCR and deploys every merge into `master` over SSH; nightly database
+  backups go to R2 (Step 32). Logs stay on the server, and nothing alerts
+  on application errors or failed backups.
 - Test coverage is the unit tests for the slot/local-time/reservation-view
   logic, `@lib/config`, `notification-worker` (retry/DLQ, reminder sweep) and
   `event-consumer` (dedupe), plus the api e2e suite. There is no e2e suite
