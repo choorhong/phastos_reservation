@@ -182,12 +182,12 @@ work through the job's token, but hand-run pulls then need
 
 ## 7. Backups to Cloudflare R2
 
-1. **Cloudflare → R2 → Create bucket** `phastos-backups` (location: Asia-
+1. **Cloudflare → R2 → Create bucket** `phastos-reservation-backups` (location: Asia-
    Pacific if offered).
 2. **Bucket → Settings → Object lifecycle rules → Add rule:** prefix
    `postgres/`, delete objects 30 days after upload.
 3. **R2 → Manage API tokens → Create API token:** permission **Object Read
-   & Write**, restricted to the bucket `phastos-backups`. Note the **Access
+   & Write**, restricted to the bucket `phastos-reservation-backups`. Note the **Access
    Key ID**, the **Secret Access Key** (shown once) and the **S3 endpoint**
    (`https://<account id>.r2.cloudflarestorage.com`). Save them in
    Bitwarden.
@@ -198,10 +198,12 @@ work through the job's token, but hand-run pulls then need
    cp deploy/env.backup.example .env.backup
    chmod 600 .env.backup
    nano .env.backup        # bucket, endpoint, the two keys
-   ./deploy/backup.sh      # ends with "uploaded s3://phastos-backups/postgres/..."
+   ./deploy/backup.sh      # ends with "uploaded s3://phastos-reservation-backups/postgres/..."
    ```
 
-5. The cron line from `deployment.md` section 8, as `deploy` (`crontab -e`).
+5. Nothing to schedule by hand: once `.env.backup` exists, every deploy
+   installs the nightly cron line (`deploy/deploy.sh`; 19:00 UTC, log in
+   `~/phastos-backup.log`). `crontab -l` shows it after the next deploy.
 
 `.env.backup` is separate from `.env.production` on purpose: every app
 container gets `.env.production`, and none of them needs the R2 keys.

@@ -74,5 +74,16 @@ docker images --format '{{.Repository}}:{{.Tag}}' "$registry/phastos-*" |
   grep -v ":$tag\$" | xargs -r docker rmi >/dev/null 2>&1 || true
 
 echo "IMAGE_TAG=$tag" >.env.deployed
+
+# Nightly database backup (deploy/backup.sh), once backups are set up:
+# .env.backup (R2) or BACKUP_BUCKET in .env.production (AWS). Replaces only
+# the backup.sh line, so other crontab entries are kept. 19:00 UTC = 03:00
+# in Singapore. A failure here warns instead of failing the deploy.
+if [[ -f .env.backup || -n $(env_value BACKUP_BUCKET) ]]; then
+  backup_line="0 19 * * * $PWD/deploy/backup.sh >> \$HOME/phastos-backup.log 2>&1"
+  { crontab -l 2>/dev/null | grep -vF 'deploy/backup.sh' || true; echo "$backup_line"; } | crontab - ||
+    echo "warning: could not install the backup cron line" >&2
+fi
+
 compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
 echo "Deployed $tag"

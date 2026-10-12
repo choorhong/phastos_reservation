@@ -2342,6 +2342,60 @@ the backup store differ.
 - Docs changes since `ec892f1` are on `develop` only (uncommitted), to
   release together with the R2 docs so production restarts once.
 
+## Step 32 — Backups to R2; deploys install the backup cron line ✅
+
+### What changed
+
+- **R2 bucket `phastos-reservation-backups`** with an Object Read & Write
+  token limited to it; keys in the server's `.env.backup` (`chmod 600`) and
+  Bitwarden. The docs and `deploy/env.backup.example` now use this name
+  instead of `phastos-backups`.
+- **`deploy/deploy.sh`** installs the nightly backup cron line itself
+  (`0 19 * * *`, 19:00 UTC = 03:00 Singapore, log in `~/phastos-backup.log`)
+  whenever backups are set up (`.env.backup` exists, or `BACKUP_BUCKET` is
+  in `.env.production` on AWS). It replaces any line mentioning
+  `deploy/backup.sh` and keeps the rest of the crontab, so it's safe on
+  every deploy and a rebuilt server gets the schedule back by itself. A
+  failure only warns: a missing cron line shouldn't fail a deploy that has
+  already restarted the apps.
+- Runbooks: no more `crontab -e` step (`deployment-digitalocean.md`
+  section 7, `deployment.md` section 8).
+
+### Things worth knowing
+
+- **R2 costs nothing at this size**: the free tier is 10 GB-month of
+  Standard storage and 1M Class A operations a month, and egress is
+  free. A dump is 28K today; 30 of them are far below that. Keep the bucket
+  on the **Standard** class: Infrequent Access has no free tier and charges
+  for retrievals. R2 needs a payment method on file even within the free
+  tier.
+- **DigitalOcean's "no backups"** on the Droplet is its own paid
+  whole-disk backup feature, unrelated to R2. Not enabled: the database
+  is the only thing that can't be rebuilt from git, GHCR and Bitwarden,
+  and a `pg_dump` is a consistent copy where a disk image may not be.
+- The cron line only appears after the **next deploy** that includes this
+  change.
+
+### Verified
+
+- First real backup, run by hand on the Droplet: `uploaded
+  s3://phastos-reservation-backups/postgres/2026/10/phastos-20261012T082749Z.dump
+  (28K, 7 tables)`.
+- The crontab logic with a stand-in `crontab`: from no crontab it adds
+  the line; with another job plus a hand-written backup line, it keeps the
+  other job and replaces the backup line; running it twice leaves one
+  line. `bash -n` clean (shellcheck isn't installed on this machine).
+- **Not verified yet:** the 30-day lifecycle rule on the renamed bucket, a
+  restore test from R2, and the first scheduled run (after the next
+  deploy, `crontab -l` and the next morning's `~/phastos-backup.log`).
+
+### Current environment state (as of pausing)
+
+- Production running `ec892f1`, now with one backup in R2. Step 32's
+  change is on `develop`, to be released through a pull request.
+- Still to do on the server: remove `ADMIN_EMAIL` / `ADMIN_PASSWORD` from
+  `.env.production`.
+
 ## Gotchas hit and fixed along the way
 
 1. **`webpack: false` in `nest-cli.json` produced nested build output**
@@ -2441,13 +2495,14 @@ migration:show` (uses `ts-node -r tsconfig-paths/register`, a separate
    value; Node clamps it to 1 ms, so it is harmless. Only the two apps that
    use Kafka show it. Not fixed.
 
-## Next step: backups to R2
+## Next step: logs off the server and error alerts
 
 **Suggested order:**
 
-1. **Backups to R2** (`docs/deployment-digitalocean.md` section 7):
-   production is live and has no backups yet. Then the remaining go-live
-   chores in Step 31's "Current environment state".
+1. **Finish Step 32:** release it, then check `crontab -l` and the next
+   morning's `~/phastos-backup.log`, confirm the lifecycle rule, run a
+   restore test, and remove `ADMIN_EMAIL` / `ADMIN_PASSWORD` from the
+   server's `.env.production`.
 2. **Logs off the server and error alerts.** DigitalOcean's alerts cover
    disk, memory and CPU, but container logs only live on the Droplet
    (capped at 30 MB per service), and nothing alerts when emails start
@@ -2480,10 +2535,10 @@ reservation. What's left before this is a real system, beyond the list above:
   refuses to start if `JWT_SECRET` (or any other required variable) is
   missing, but it cannot tell a placeholder from a real secret, so a
   copied-over placeholder value still passes.
-- Dockerfiles and a CI workflow exist (Step 20) and pass on GitHub
-  Actions (checked in Step 23). Images are only built in CI, never pushed
-  to a registry. A production compose file and an EC2 runbook exist
-  (Step 24, `docs/deployment.md`), but nothing has been deployed yet.
+- Deployed on a DigitalOcean Droplet (Steps 30–31): CI pushes images to
+  GHCR and deploys every merge into `master` over SSH; nightly database
+  backups go to R2 (Step 32). Logs stay on the server, and nothing alerts
+  on application errors or failed backups.
 - Test coverage is the unit tests for the slot/local-time/reservation-view
   logic, `@lib/config`, `notification-worker` (retry/DLQ, reminder sweep) and
   `event-consumer` (dedupe), plus the api e2e suite. There is no e2e suite
